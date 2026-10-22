@@ -1,0 +1,63 @@
+name: build
+
+# Builds the Android (Thor) and Linux modules, runs the tests and packs the installable
+# 0100BA4026E94000.dsmod.zip. Runs on every push and by hand (Actions tab -> build -> Run workflow).
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      BUILD_ID: 0F1169AA7D0FA4529C861F96ADEC306E00000000000000000000000000000000
+      VERSION: 0.1.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Android NDK
+        run: |
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          NDK="$SDK/ndk/28.2.13676358"
+          if [ ! -d "$NDK" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358" > /dev/null || true
+          fi
+          if [ ! -d "$NDK" ]; then NDK="$ANDROID_NDK_LATEST_HOME"; fi
+          echo "Using NDK at $NDK"
+          test -f "$NDK/build/cmake/android.toolchain.cmake"
+          echo "ANDROID_NDK=$NDK" >> "$GITHUB_ENV"
+
+      - name: Linux module and tests
+        run: |
+          cmake -S native -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_CXX_FLAGS=-ffile-prefix-map=$GITHUB_WORKSPACE=."
+          cmake --build build-linux
+          ctest --test-dir build-linux --output-on-failure
+
+      - name: Android arm64 module
+        run: |
+          cmake -S native -B build-android -G Ninja -DCMAKE_BUILD_TYPE=Release -DBC_BUILD_TOOLS=OFF \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 -DANDROID_STL=c++_static \
+            "-DCMAKE_CXX_FLAGS=-ffile-prefix-map=$GITHUB_WORKSPACE=."
+          cmake --build build-android
+
+      - name: Strip
+        run: |
+          "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all build-android/0100BA4026E94000.so
+          strip --strip-all build-linux/0100BA4026E94000.so
+
+      - name: Package
+        run: |
+          python3 tools/build_dualscreen_package.py --package package --output dist \
+            --version "$VERSION" --name "Belmonts Curse map" --abi 1 --build-id "$BUILD_ID" \
+            --min-runtime 16 \
+            --module android-arm64-v8a=build-android/0100BA4026E94000.so \
+            --module linux-x86_64=build-linux/0100BA4026E94000.so
+          unzip -l dist/0100BA4026E94000.dsmod.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BelmontsCurseMap-${{ env.VERSION }}
+          path: dist/0100BA4026E94000.dsmod.zip
+          if-no-files-found: error
