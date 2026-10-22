@@ -1,67 +1,109 @@
-# Castlevania: Belmont's Curse – Eden Duo harita companion (test sürümü 0.1.0)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.1.0)
 
-Thor'un alt ekranında oyunun haritasını gösteren Eden Duo paketi. Yalnızca şu sürümle çalışır:
+A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
+castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
+handheld (developed on an AYN Thor).
 
 | | |
 |---|---|
-| Oyun | Castlevania: Belmont's Curse, `0100BA4026E94000` |
-| Güncelleme | 1.1.0 (build `0F1169AA7D0FA452…`) |
-| Eden Duo | 1.3.x (runtime 16 ve üstü) |
+| Game | Castlevania: Belmont's Curse, title ID `0100BA4026E94000` |
+| Game version | 1.1.0 (build `0F1169AA7D0FA4529C861F96ADEC306E`) |
+| Eden Duo | 1.3.x (package declares `min_runtime` 16) |
 
-Paket oyundan hiçbir şey taşımaz. Odalar, oyun çalışırken senin kendi romfs'indeki
-`data-world_biome_*` dosyalarından okunur ve modül tarafından çizilir.
+The package ships **no game assets**. The room layout is read at runtime from the player's own
+romfs and drawn by the native module.
 
-## Bu sürüm ne yapıyor?
+## Features
 
-- **MAP sayfası:** O an bulunduğun bölgenin (biome) haritası. Oyuncunun bulunduğu chunk'ta beyaz-kırmızı bir kare var.
-  - `ZOOM`: Tüm bölge, geniş görünüm, yakın görünüm arasında geçiş yapar.
-  - `FOG`: Keşfedilmemiş odaları soluk olarak gösterir veya gizler.
-  - `- AREA` / `AREA +`: Başka bölgelerin haritasına bakmanı sağlar.
-  - `FOLLOW`: Tekrar oyuncuyu takip etmeye döner.
-- **DEBUG sayfası:** Modülün oyunun belleğinden okuduğu her değeri adım adım gösterir. Bu ilk sürüm,
-  bellek zincirinin Thor'da doğru çalışıp çalışmadığını görmek için yapıldı.
+- **Map page.** The current biome, drawn room by room from the game's own collision grids,
+  with chunk-level fog of war and a marker on the player's current chunk.
+  - `ZOOM`: whole biome, wide view, close view.
+  - `FOG`: show or hide unexplored rooms (dimmed).
+  - `- AREA` / `AREA +`: browse the other biomes.
+  - `FOLLOW`: go back to following the player.
+- **Debug page.** Every step of the live memory chain (resolve stage, current chunk, room,
+  exploration state, world loading). This first build is meant to verify that chain on a device.
 
-## Paketi derlemek (GitHub Actions, bilgisayarına bir şey kurman gerekmez)
+## How it works
 
-1. github.com'da ücretsiz bir hesap aç.
-2. Sağ üstteki **+** menüsünden **New repository** seç. Bir isim ver (örneğin `belmonts-curse-dsmod`).
-   **Private** seçebilirsin. **Create repository** de.
-3. Açılan sayfada **uploading an existing file** bağlantısına tıkla. Bu zip'ten çıkan klasörün
-   **içindeki her şeyi** (`.github`, `native`, `package`, `tools`, `README.md`, `LICENSE`) sürükleyip
-   bırak. **Commit changes** de.
-   - `.github` klasörünün de yüklendiğinden emin ol. Derleme talimatı onun içinde.
-4. **Actions** sekmesine geç. Derleme kendiliğinden başlar. Başlamazsa **build** iş akışını aç ve
-   **Run workflow** de. Yaklaşık 5 dakika sürer.
-5. Yeşil tik çıkınca çalışmayı aç. En altta **Artifacts** altındaki `BelmontsCurseMap-0.1.0` dosyasını indir.
-   İnen zip'in içinde `0100BA4026E94000.dsmod.zip` var. Onu çıkar, **adını değiştirme**.
+### Map data (romfs, at runtime)
 
-## Thor'a kurmak
+Each biome bundle (`Data/StreamingAssets/aa/Switch/data-world_biome_<NN>_<name>_assets_all_<hash>.bundle`,
+plain UnityFS, LZ4HC) contains:
 
-1. `0100BA4026E94000.dsmod.zip` dosyasını Thor'a kopyala.
-2. Eden Duo'da oyuna uzun bas, **Add-ons** bölümüne gir ve **Install** de. **Dual screen mods** seç ve dosyayı göster.
-3. Oyunu başlat ve kayıt dosyanı yükle. Alt ekranda harita sayfası açılır.
+- one `WorldData` MonoBehaviour whose `_rooms` list places every room on the biome's chunk
+  grid (`positionCoord`; `runtimeRoomNumber` equals the `uid` in the room's scene name);
+- one `RoomData` per room: `_width` x `_height` chunks of `chunkSize` 24x13 tiles, each chunk with
+  an `enabled` flag and a per-tile `_collisions` byte (1 solid, 0 open);
+- one `RoomConfiguration` per room (save / boss / fast-travel flags, ZDoor positions).
 
-## Bana ne göndermelisin?
+`native/bc_unity.*` is a small bounds-checked UnityFS / SerializedFile / type-tree reader
+(its output matches UnityPy 1.25 on all 12,355 MonoBehaviours of the map bundles). `bc_world.*`
+builds the room model (384 rooms in 10 biomes for 1.1.0) and `bc_render.*` rasterises it.
+Bundle file names are pinned for this build, with a fallback that scans `aa/catalog.json`.
 
-Oyunda bir odadayken **DEBUG** sayfasının fotoğrafını çek. İkinci bir fotoğrafı da yandaki odaya
-geçince çek. Özellikle şu satırlar önemli: `STAGE`, `STATUS`, `CHUNK X Y`, `CHUNK MODE`,
-`ROOM UID`, `FOG OK N MATCH`, `FOG HERE` ve `WORLD BIOMES ROOMS`. Bunlarla şunları doğrulayacağım:
+### Live state (guest memory)
 
-- Oyuncu karesinin doğru chunk'ta olup olmadığını,
-- Keşif (fog) değerlerinin anlamını,
-- Odaların hangi anahtarla eşleştiğini.
+All locations come from the game's own `global-metadata.dat` (IL2CPP v31) and `main` NSO:
 
-## Geliştirme (bilgisayarda test)
+| What | Where |
+|---|---|
+| Root | `MotherBase.EntityFramework.SystemManager` TypeInfo slot `main+0x6D47368`, static `Instance` |
+| Systems | `SystemManager._fixedUpdateSystems / _dynamicUpdateSystems / _lateUpdateSystems` (`+0x28/0x30/0x38`) |
+| Current chunk | `RoomManager.RoomManagerSystem._currentChunk` `+0x80` (`_previousChunk` `+0x78`) |
+| Current room | `RoomManagerSystem._currentRoomHandle` `+0x90` → `worldRoomData` `+0x18` (`worldName`, `positionCoord`, `runtimeRoomNumber`, `_instanceName`, `_id`) |
+| Exploration | `ExplorationSystem._mcExplorerComponent` `+0x48` → `worldRoomExplorationStates` (`Dictionary<string, WorldRoomExplorationState>`) → `chunksExplorationState` (`NoChunk`, `Unexplored`, `ExploredTemporary`, `Validated`) |
 
-```
+Classes are checked by name before their fields are read, every read is bounded, and each step
+fails closed. Under NCE the data segment may sit at a constant shift from `main_base`; the
+module learns it once from `Il2CppMetadataRegistration` (`main+0x6A95908`), whose counts are fixed
+for this build.
+
+**Not yet verified on a device:** the full live chain, whether `_currentChunk` is room-local or
+biome-wide (the debug page shows `CHUNK MODE`), and the exploration-state values.
+
+## Building
+
+The GitHub Actions workflow (`.github/workflows/build.yml`) builds the Android arm64 and Linux
+modules, runs the tests and produces `0100BA4026E94000.dsmod.zip` as an artifact (Actions tab →
+`build` → the run's **Artifacts**).
+
+Locally (Linux):
+
+```sh
 cmake -S native -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
-build/bc_live_test                                     # bellek okuyucu testi (sahte bellek)
-build/bc_world_tool <romfs veya bundle klasörü> out    # haritaları PPM olarak çizer
-build/bc_host_sim build/0100BA4026E94000.so <romfs> out # modülü Eden gibi yükleyip çalıştırır
-python3 tools/gen_manifest.py                          # package/dualscreen/manifest.json'u üretir
+ctest --test-dir build                                    # live reader against a fake guest
+build/bc_world_tool <romfs-or-bundle-dir> out             # render every biome to PPM
+build/bc_host_sim build/0100BA4026E94000.so <romfs> out   # drive the module through its C ABI
+python3 tools/gen_manifest.py                             # regenerate package/dualscreen/manifest.json
 ```
 
-Lisans: GPL-3.0-or-later. `native/third_party/eden` içindeki ABI başlıkları ve
-`tools/build_dualscreen_package.py`, Eden Duo ve eden-duo-companions projelerinden (GPL-3.0) olduğu
-gibi alındı.
+Android arm64 (NDK r28c):
+
+```sh
+cmake -S native -B build-android -G Ninja -DCMAKE_BUILD_TYPE=Release -DBC_BUILD_TOOLS=OFF \
+  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 -DANDROID_STL=c++_static
+cmake --build build-android
+```
+
+Package with `tools/build_dualscreen_package.py` (see the workflow for the exact command).
+
+## Installing
+
+1. Copy `0100BA4026E94000.dsmod.zip` to the device. Do not rename it.
+2. In Eden Duo, long-press the game → **Add-ons** → **Install** → **Dual screen mods** → pick the file.
+3. Start the game and load a save. The map page appears on the second screen.
+
+## Testing feedback
+
+Useful reports: a photo of the **Debug** page in one room and again after walking into the next
+room, plus a photo of the **Map** page. The key rows are `STAGE`, `STATUS`, `CHUNK X Y`,
+`CHUNK MODE`, `ROOM UID`, `FOG OK N MATCH`, `FOG HERE` and `WORLD BIOMES ROOMS`.
+
+## License
+
+GPL-3.0-or-later. The ABI headers in `native/third_party/eden` and
+`tools/build_dualscreen_package.py` are copied unchanged from Eden Duo and eden-duo-companions
+(GPL-3.0-or-later).
