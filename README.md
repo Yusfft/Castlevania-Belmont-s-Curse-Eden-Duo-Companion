@@ -2,7 +2,7 @@
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
-handheld (developed on an AYN Thor).
+handhelds (specificallu developed to run on an AYN Thor).
 
 | | |
 |---|---|
