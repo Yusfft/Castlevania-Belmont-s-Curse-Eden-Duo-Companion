@@ -1,0 +1,1133 @@
+{
+ "format": 1,
+ "title_id": "0100BA4026E94000",
+ "name": "Belmonts Curse map",
+ "min_runtime": 16,
+ "requires_module": true,
+ "_note": "Castlevania: Belmont's Curse 1.1.0 (build 0F1169AA7D0FA452). The map is drawn by the module from the player's own romfs; nothing from the game is shipped.",
+ "canvas_w": 1240,
+ "canvas_h": 1080,
+ "background": "#FF0C0A10",
+ "nav": false,
+ "haptics": {
+  "enabled": true,
+  "respect_system": true,
+  "tap": "light",
+  "refused": "off"
+ },
+ "actions": {
+  "act_zoom": {
+   "kind": "module",
+   "action": "zoom",
+   "argument": 0
+  },
+  "act_unexp": {
+   "kind": "module",
+   "action": "unexp",
+   "argument": 0
+  },
+  "act_prev": {
+   "kind": "module",
+   "action": "biome_prev",
+   "argument": 0
+  },
+  "act_next": {
+   "kind": "module",
+   "action": "biome_next",
+   "argument": 0
+  },
+  "act_follow": {
+   "kind": "module",
+   "action": "follow",
+   "argument": 0
+  },
+  "act_debug": {
+   "kind": "page",
+   "page": "debug",
+   "transition": "fade",
+   "duration_ms": 150
+  },
+  "act_map": {
+   "kind": "page",
+   "page": "map",
+   "transition": "fade",
+   "duration_ms": 150
+  }
+ },
+ "module_outputs": [
+  "bc.*"
+ ],
+ "pages": [
+  {
+   "id": "map",
+   "title": "Map",
+   "widgets": [
+    {
+     "type": "rect",
+     "rect": [
+      0,
+      0,
+      1240,
+      92
+     ],
+     "bg": "#FF16121E",
+     "color": "#00000000",
+     "frame": 0
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      26,
+      860,
+      40
+     ],
+     "text_scale": 6,
+     "color": "#FFE9C46A",
+     "bind_text": "bc.biome.label"
+    },
+    {
+     "type": "label",
+     "rect": [
+      900,
+      34,
+      120,
+      30
+     ],
+     "text_scale": 4,
+     "color": "#FF9A8FB0",
+     "text": "ROOM"
+    },
+    {
+     "type": "value",
+     "rect": [
+      1040,
+      34,
+      180,
+      30
+     ],
+     "bind": "bc.room.uid",
+     "text_scale": 4,
+     "color": "#FFE6E1F0",
+     "need_bind": "bc.room.ok"
+    },
+    {
+     "type": "image",
+     "rect": [
+      0,
+      96,
+      1240,
+      888
+     ],
+     "src_bind": "bc.map.key",
+     "need_bind": "bc.map.ready"
+    },
+    {
+     "type": "label",
+     "rect": [
+      40,
+      480,
+      1160,
+      40
+     ],
+     "text_scale": 5,
+     "color": "#FF9A8FB0",
+     "text": "READING MAP DATA...",
+     "need_bind": "!bc.map.ready"
+    },
+    {
+     "type": "label",
+     "rect": [
+      40,
+      540,
+      1160,
+      40
+     ],
+     "text_scale": 4,
+     "color": "#FF9A8FB0",
+     "text": "IF THIS STAYS, OPEN DEBUG",
+     "need_bind": "!bc.map.ready"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      0,
+      96,
+      32,
+      32
+     ],
+     "bg": "#FFFFFFFF",
+     "color": "#00000000",
+     "frame": 0,
+     "x_bind": "bc.mk.x",
+     "y_bind": "bc.mk.y",
+     "need_bind": "bc.mk.show"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      6,
+      102,
+      20,
+      20
+     ],
+     "bg": "#FFE0402F",
+     "color": "#00000000",
+     "frame": 0,
+     "x_bind": "bc.mk.x",
+     "y_bind": "bc.mk.y",
+     "need_bind": "bc.mk.show"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      0,
+      984,
+      1240,
+      96
+     ],
+     "bg": "#FF16121E",
+     "color": "#00000000",
+     "frame": 0
+    },
+    {
+     "type": "button",
+     "rect": [
+      14,
+      996,
+      192,
+      72
+     ],
+     "text": "ZOOM",
+     "on_tap": "act_zoom",
+     "text_scale": 5,
+     "color": "#FFE6E1F0",
+     "bg": "#FF2A2238",
+     "border": 3
+    },
+    {
+     "type": "button",
+     "rect": [
+      218,
+      996,
+      192,
+      72
+     ],
+     "text": "FOG",
+     "on_tap": "act_unexp",
+     "text_scale": 5,
+     "color": "#FFE6E1F0",
+     "bg": "#FF2A2238",
+     "border": 3
+    },
+    {
+     "type": "button",
+     "rect": [
+      422,
+      996,
+      192,
+      72
+     ],
+     "text": "- AREA",
+     "on_tap": "act_prev",
+     "text_scale": 5,
+     "color": "#FFE6E1F0",
+     "bg": "#FF2A2238",
+     "border": 3
+    },
+    {
+     "type": "button",
+     "rect": [
+      626,
+      996,
+      192,
+      72
+     ],
+     "text": "AREA +",
+     "on_tap": "act_next",
+     "text_scale": 5,
+     "color": "#FFE6E1F0",
+     "bg": "#FF2A2238",
+     "border": 3
+    },
+    {
+     "type": "button",
+     "rect": [
+      830,
+      996,
+      192,
+      72
+     ],
+     "text": "FOLLOW",
+     "on_tap": "act_follow",
+     "text_scale": 5,
+     "color": "#FFE6E1F0",
+     "bg": "#FF2A2238",
+     "border": 3
+    },
+    {
+     "type": "button",
+     "rect": [
+      1034,
+      996,
+      192,
+      72
+     ],
+     "text": "DEBUG",
+     "on_tap": "act_debug",
+     "text_scale": 5,
+     "color": "#FFE6E1F0",
+     "bg": "#FF2A2238",
+     "border": 3
+    }
+   ]
+  },
+  {
+   "id": "debug",
+   "title": "Debug",
+   "widgets": [
+    {
+     "type": "rect",
+     "rect": [
+      0,
+      0,
+      1240,
+      72
+     ],
+     "bg": "#FF16121E",
+     "color": "#00000000",
+     "frame": 0
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      20,
+      800,
+      40
+     ],
+     "text_scale": 6,
+     "color": "#FFE9C46A",
+     "text": "DEBUG"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      84,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "VERSION"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      84,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.ver",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      113,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "MODULE READY"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      113,
+      200,
+      29
+     ],
+     "bind": "module_ready",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      142,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "MODULE ERROR"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      142,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "module_error_message",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      171,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "BUILD MATCH"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      171,
+      200,
+      29
+     ],
+     "bind": "build_match",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      200,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "STAGE"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      200,
+      200,
+      29
+     ],
+     "bind": "bc.stage",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      229,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "STATUS"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      229,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.status",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      258,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "DATA SHIFT"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      258,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.delta",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      287,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "STATIC OFFSET"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      287,
+      200,
+      29
+     ],
+     "bind": "bc.sf",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      316,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "SYSTEMS"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      316,
+      200,
+      29
+     ],
+     "bind": "bc.nsys",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      345,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "SYSTEM NAMES"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      345,
+      800,
+      87
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.systems",
+     "wrap_width": 800,
+     "max_lines": 3
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      432,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "CHUNK X Y"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      432,
+      200,
+      29
+     ],
+     "bind": "bc.chunk.x",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      640,
+      432,
+      200,
+      29
+     ],
+     "bind": "bc.chunk.y",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      461,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "PREV CHUNK"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      461,
+      200,
+      29
+     ],
+     "bind": "bc.prev.x",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      640,
+      461,
+      200,
+      29
+     ],
+     "bind": "bc.prev.y",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      490,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "CHUNK MODE"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      490,
+      200,
+      29
+     ],
+     "bind": "bc.chunk.mode",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      519,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "ROOM UID  EX UID"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      519,
+      200,
+      29
+     ],
+     "bind": "bc.room.uid",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      640,
+      519,
+      200,
+      29
+     ],
+     "bind": "bc.ex.uid",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      548,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "ROOM POS"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      548,
+      200,
+      29
+     ],
+     "bind": "bc.room.x",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      640,
+      548,
+      200,
+      29
+     ],
+     "bind": "bc.room.y",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      577,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "WORLD"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      577,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.room.world",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      606,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "ROOM NAME"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      606,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.room.inst",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      635,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "ROOM ID"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      635,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.room.id",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      664,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "MAP POS X100"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      664,
+      200,
+      29
+     ],
+     "bind": "bc.mm.x",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      640,
+      664,
+      200,
+      29
+     ],
+     "bind": "bc.mm.y",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      860,
+      664,
+      200,
+      29
+     ],
+     "bind": "bc.mm.z",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      693,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "FOG OK N MATCH"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      693,
+      200,
+      29
+     ],
+     "bind": "bc.fog.ok",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      640,
+      693,
+      200,
+      29
+     ],
+     "bind": "bc.fog.n",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      860,
+      693,
+      200,
+      29
+     ],
+     "bind": "bc.fog.matched",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      722,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "FOG HERE"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      722,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.fog.cur",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      751,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "FOG KEYS"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      751,
+      800,
+      58
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.fog.keys",
+     "wrap_width": 800,
+     "max_lines": 2
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      809,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "WORLD BIOMES ROOMS"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      809,
+      200,
+      29
+     ],
+     "bind": "bc.world.ready",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      640,
+      809,
+      200,
+      29
+     ],
+     "bind": "bc.world.biomes",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      860,
+      809,
+      200,
+      29
+     ],
+     "bind": "bc.world.rooms",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      838,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "WORLD LOG"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      838,
+      800,
+      58
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.world.log",
+     "wrap_width": 800,
+     "max_lines": 2
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      896,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "ZOOM FOG FOLLOW"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      896,
+      200,
+      29
+     ],
+     "bind": "bc.zoom",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      640,
+      896,
+      200,
+      29
+     ],
+     "bind": "bc.unexp",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      860,
+      896,
+      200,
+      29
+     ],
+     "bind": "bc.follow",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      925,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "SAMPLE US"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      925,
+      200,
+      29
+     ],
+     "bind": "bc.us",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      0,
+      984,
+      1240,
+      96
+     ],
+     "bg": "#FF16121E",
+     "color": "#00000000",
+     "frame": 0
+    },
+    {
+     "type": "button",
+     "rect": [
+      14,
+      996,
+      300,
+      72
+     ],
+     "text": "MAP",
+     "on_tap": "act_map",
+     "text_scale": 5,
+     "color": "#FFE6E1F0",
+     "bg": "#FF2A2238",
+     "border": 3
+    }
+   ]
+  }
+ ]
+}
