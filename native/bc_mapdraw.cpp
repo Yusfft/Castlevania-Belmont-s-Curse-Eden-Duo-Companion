@@ -437,6 +437,8 @@ std::vector<std::uint8_t> Render(const LevelMap& map, const Reveal& reveal, cons
         icons.push_back(pi);
     }
 
+    // Drawn larger than 1.5 px per texel (4 texels per unit), the outlines are sharpened.
+    const float sharpen = std::max(1.0f, static_cast<float>(view.scale / 4.0 / 1.5));
     Parallel(opt.threads, view.h, [&](int py) {
         std::vector<float> row(static_cast<std::size_t>(view.w) * 3, 0.0f);
         const double wy = view.y1 - (py + 0.5) / view.scale;
@@ -493,6 +495,7 @@ std::vector<std::uint8_t> Render(const LevelMap& map, const Reveal& reveal, cons
             pix.wy = static_cast<float>(wy);
             pix.fog = d * 0.1f; // the game's fog pass stores distance / 10
             pix.selected = opt.selected;
+            pix.sharpen = sharpen;
             const Vec4 c = bc_shade::Shade(P, tex, pix, lim);
             const float a = std::clamp(c.w, 0.0f, 1.0f);
             float* o = &row[static_cast<std::size_t>(px) * 3];

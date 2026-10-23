@@ -103,6 +103,13 @@ void Sink(void* receiver, std::uint32_t w, std::uint32_t h, const std::uint8_t* 
         std::fwrite(c, 1, 3, f);
     }
     std::fclose(f);
+    // The same with alpha (u32 w, u32 h, RGBA), for page previews.
+    if (std::FILE* r = std::fopen((out->path + ".rgba").c_str(), "wb")) {
+        std::fwrite(&w, 4, 1, r);
+        std::fwrite(&h, 4, 1, r);
+        std::fwrite(px, 1, size, r);
+        std::fclose(r);
+    }
     std::fprintf(stderr, "image %ux%u -> %s\n", w, h, out->path.c_str());
 }
 
@@ -318,6 +325,54 @@ int main(int argc, char** argv) {
                 sim.texts["bc.title"].c_str(), static_cast<long long>(sim.ints["bc.mk.dy"]),
                 static_cast<long long>(sim.ints["bc.lm.state"]));
     save(sim.texts["bc.map.key"], "sim_main_close");
+    // Pins: the runtime reads the persisted flags back through pin_load:<i> (slot 3 holds a
+    // chest at (50, 44) on map 1), then pin mode, symbol 2 (eye), taps.
+    {
+        const long long chest = (1LL << 48) | (1LL << 43) | (1LL << 40) | ((50LL * 4 + (1 << 19)) << 20) |
+                                (44LL * 4 + (1 << 19));
+        for (int i = 0; i < 24; ++i)
+            ext->on_action(inst, ("pin_load:" + std::to_string(i)).c_str(), i == 3 ? chest : 0);
+        sample_n(2);
+        std::printf("pins loaded=%lld n=%lld sync=%lld v3=%lld\n", static_cast<long long>(sim.ints["bc.pin.loaded"]),
+                    static_cast<long long>(sim.ints["bc.pin.n"]), static_cast<long long>(sim.ints["bc.pin.sync"]),
+                    static_cast<long long>(sim.ints["bc.pin.v3"]));
+        ext->on_action(inst, "pin_mode", 0);
+        ext->on_action(inst, "pin_type", 2);
+        sample_n(2);
+        const auto tap = [&](int x, int y) {
+            const long long packed = (static_cast<long long>(x) << 32) | static_cast<unsigned>(y);
+            const auto ok = ext->on_action(inst, "pin_tap", packed);
+            sample_n(2);
+            std::printf("tap %d,%d -> %u n=%lld v0=%llx v3=%llx key=%s\n", x, y, ok,
+                        static_cast<long long>(sim.ints["bc.pin.n"]),
+                        static_cast<unsigned long long>(sim.ints["bc.pin.v0"]),
+                        static_cast<unsigned long long>(sim.ints["bc.pin.v3"]), sim.texts["bc.map.key"].c_str());
+        };
+        std::printf("pin mode=%lld btn=%s k2=%s\n", static_cast<long long>(sim.ints["bc.pin.mode"]),
+                    sim.texts["bc.pin.btn"].c_str(), sim.texts["bc.pin.k2"].c_str());
+        tap(820, 460); // on the chest: becomes an eye
+        tap(420, 600); // a new eye
+        tap(300, 300); // another
+        tap(300, 300); // same symbol again: removed
+        save(sim.texts["bc.map.key"], "sim_pins_close");
+        for (const char* k : {"zbtn:4", "zbtn:0", "zoom:3", "btn:pin:0", "btn:pin:1", "pin:0:0", "pin:2:1", "pinhint"})
+            {
+                std::string n = k;
+                for (char& c : n)
+                    if (c == ':')
+                        c = '_';
+                save(std::string("module:bc:ui:") + k, "sim_ui2_" + n);
+            }
+        ext->on_action(inst, "zbar_open", 0);
+        sample_n(1);
+        std::printf("zbar=%lld zbtn=%s\n", static_cast<long long>(sim.ints["bc.zbar"]), sim.texts["bc.ui.zbtn"].c_str());
+        ext->on_action(inst, "zoom_set", 3);
+        sample_n(2);
+        std::printf("after zoom_set 3: zbar=%lld zoom=%lld key=%s\n", static_cast<long long>(sim.ints["bc.zbar"]),
+                    static_cast<long long>(sim.ints["bc.zoom"]), sim.texts["bc.map.key"].c_str());
+        ext->on_action(inst, "zoom_set", 4);
+        sample_n(2);
+    }
     save(sim.texts["bc.title.key"], "sim_main_title");
     ext->on_action(inst, "zoom", 0);
     ext->on_action(inst, "zoom", 0); // -> area

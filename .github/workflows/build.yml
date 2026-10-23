@@ -63,7 +63,7 @@ jobs:
         run: |
           python3 tools/build_dualscreen_package.py --package package --output dist \
             --version "$VERSION" --name "Belmonts Curse map" --abi 1 --build-id "$BUILD_ID" \
-            --min-runtime 16 \
+            --min-runtime 22 \
             --module android-arm64-v8a=build-android/0100BA4026E94000.so \
             --module linux-x86_64=build-linux/0100BA4026E94000.so
           unzip -l dist/0100BA4026E94000.dsmod.zip

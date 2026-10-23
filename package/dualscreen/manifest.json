@@ -2,7 +2,7 @@
  "format": 1,
  "title_id": "0100BA4026E94000",
  "name": "Belmonts Curse map",
- "min_runtime": 16,
+ "min_runtime": 22,
  "requires_module": true,
  "_note": "Castlevania: Belmont's Curse 1.1.0 (build 0F1169AA7D0FA452). The map, its icons and the title font are read by the module from the player's own romfs; nothing from the game is shipped.",
  "canvas_w": 1240,
@@ -46,6 +46,296 @@
    "action": "zoom_set",
    "argument": 2
   },
+  "act_zoom3": {
+   "kind": "module",
+   "action": "zoom_set",
+   "argument": 3
+  },
+  "act_zoom4": {
+   "kind": "module",
+   "action": "zoom_set",
+   "argument": 4
+  },
+  "act_zbar_open": {
+   "kind": "module",
+   "action": "zbar_open",
+   "argument": 0
+  },
+  "act_zbar_close": {
+   "kind": "module",
+   "action": "zbar_close",
+   "argument": 0
+  },
+  "act_pin_mode": {
+   "kind": "module",
+   "action": "pin_mode",
+   "argument": 0
+  },
+  "act_pin_type0": {
+   "kind": "module",
+   "action": "pin_type",
+   "argument": 0
+  },
+  "act_pin_type1": {
+   "kind": "module",
+   "action": "pin_type",
+   "argument": 1
+  },
+  "act_pin_type2": {
+   "kind": "module",
+   "action": "pin_type",
+   "argument": 2
+  },
+  "act_pin_tap": {
+   "kind": "module",
+   "action": "pin_tap",
+   "argument": "$payload"
+  },
+  "act_pin_load0": {
+   "kind": "module",
+   "action": "pin_load:0",
+   "argument": "$@flag:pin.v0"
+  },
+  "act_pin_load1": {
+   "kind": "module",
+   "action": "pin_load:1",
+   "argument": "$@flag:pin.v1"
+  },
+  "act_pin_load2": {
+   "kind": "module",
+   "action": "pin_load:2",
+   "argument": "$@flag:pin.v2"
+  },
+  "act_pin_load3": {
+   "kind": "module",
+   "action": "pin_load:3",
+   "argument": "$@flag:pin.v3"
+  },
+  "act_pin_load4": {
+   "kind": "module",
+   "action": "pin_load:4",
+   "argument": "$@flag:pin.v4"
+  },
+  "act_pin_load5": {
+   "kind": "module",
+   "action": "pin_load:5",
+   "argument": "$@flag:pin.v5"
+  },
+  "act_pin_load6": {
+   "kind": "module",
+   "action": "pin_load:6",
+   "argument": "$@flag:pin.v6"
+  },
+  "act_pin_load7": {
+   "kind": "module",
+   "action": "pin_load:7",
+   "argument": "$@flag:pin.v7"
+  },
+  "act_pin_load8": {
+   "kind": "module",
+   "action": "pin_load:8",
+   "argument": "$@flag:pin.v8"
+  },
+  "act_pin_load9": {
+   "kind": "module",
+   "action": "pin_load:9",
+   "argument": "$@flag:pin.v9"
+  },
+  "act_pin_load10": {
+   "kind": "module",
+   "action": "pin_load:10",
+   "argument": "$@flag:pin.v10"
+  },
+  "act_pin_load11": {
+   "kind": "module",
+   "action": "pin_load:11",
+   "argument": "$@flag:pin.v11"
+  },
+  "act_pin_load12": {
+   "kind": "module",
+   "action": "pin_load:12",
+   "argument": "$@flag:pin.v12"
+  },
+  "act_pin_load13": {
+   "kind": "module",
+   "action": "pin_load:13",
+   "argument": "$@flag:pin.v13"
+  },
+  "act_pin_load14": {
+   "kind": "module",
+   "action": "pin_load:14",
+   "argument": "$@flag:pin.v14"
+  },
+  "act_pin_load15": {
+   "kind": "module",
+   "action": "pin_load:15",
+   "argument": "$@flag:pin.v15"
+  },
+  "act_pin_load16": {
+   "kind": "module",
+   "action": "pin_load:16",
+   "argument": "$@flag:pin.v16"
+  },
+  "act_pin_load17": {
+   "kind": "module",
+   "action": "pin_load:17",
+   "argument": "$@flag:pin.v17"
+  },
+  "act_pin_load18": {
+   "kind": "module",
+   "action": "pin_load:18",
+   "argument": "$@flag:pin.v18"
+  },
+  "act_pin_load19": {
+   "kind": "module",
+   "action": "pin_load:19",
+   "argument": "$@flag:pin.v19"
+  },
+  "act_pin_load20": {
+   "kind": "module",
+   "action": "pin_load:20",
+   "argument": "$@flag:pin.v20"
+  },
+  "act_pin_load21": {
+   "kind": "module",
+   "action": "pin_load:21",
+   "argument": "$@flag:pin.v21"
+  },
+  "act_pin_load22": {
+   "kind": "module",
+   "action": "pin_load:22",
+   "argument": "$@flag:pin.v22"
+  },
+  "act_pin_load23": {
+   "kind": "module",
+   "action": "pin_load:23",
+   "argument": "$@flag:pin.v23"
+  },
+  "act_pin_save0": {
+   "kind": "flag",
+   "flag": "pin.v0",
+   "value": "$bc.pin.v0"
+  },
+  "act_pin_save1": {
+   "kind": "flag",
+   "flag": "pin.v1",
+   "value": "$bc.pin.v1"
+  },
+  "act_pin_save2": {
+   "kind": "flag",
+   "flag": "pin.v2",
+   "value": "$bc.pin.v2"
+  },
+  "act_pin_save3": {
+   "kind": "flag",
+   "flag": "pin.v3",
+   "value": "$bc.pin.v3"
+  },
+  "act_pin_save4": {
+   "kind": "flag",
+   "flag": "pin.v4",
+   "value": "$bc.pin.v4"
+  },
+  "act_pin_save5": {
+   "kind": "flag",
+   "flag": "pin.v5",
+   "value": "$bc.pin.v5"
+  },
+  "act_pin_save6": {
+   "kind": "flag",
+   "flag": "pin.v6",
+   "value": "$bc.pin.v6"
+  },
+  "act_pin_save7": {
+   "kind": "flag",
+   "flag": "pin.v7",
+   "value": "$bc.pin.v7"
+  },
+  "act_pin_save8": {
+   "kind": "flag",
+   "flag": "pin.v8",
+   "value": "$bc.pin.v8"
+  },
+  "act_pin_save9": {
+   "kind": "flag",
+   "flag": "pin.v9",
+   "value": "$bc.pin.v9"
+  },
+  "act_pin_save10": {
+   "kind": "flag",
+   "flag": "pin.v10",
+   "value": "$bc.pin.v10"
+  },
+  "act_pin_save11": {
+   "kind": "flag",
+   "flag": "pin.v11",
+   "value": "$bc.pin.v11"
+  },
+  "act_pin_save12": {
+   "kind": "flag",
+   "flag": "pin.v12",
+   "value": "$bc.pin.v12"
+  },
+  "act_pin_save13": {
+   "kind": "flag",
+   "flag": "pin.v13",
+   "value": "$bc.pin.v13"
+  },
+  "act_pin_save14": {
+   "kind": "flag",
+   "flag": "pin.v14",
+   "value": "$bc.pin.v14"
+  },
+  "act_pin_save15": {
+   "kind": "flag",
+   "flag": "pin.v15",
+   "value": "$bc.pin.v15"
+  },
+  "act_pin_save16": {
+   "kind": "flag",
+   "flag": "pin.v16",
+   "value": "$bc.pin.v16"
+  },
+  "act_pin_save17": {
+   "kind": "flag",
+   "flag": "pin.v17",
+   "value": "$bc.pin.v17"
+  },
+  "act_pin_save18": {
+   "kind": "flag",
+   "flag": "pin.v18",
+   "value": "$bc.pin.v18"
+  },
+  "act_pin_save19": {
+   "kind": "flag",
+   "flag": "pin.v19",
+   "value": "$bc.pin.v19"
+  },
+  "act_pin_save20": {
+   "kind": "flag",
+   "flag": "pin.v20",
+   "value": "$bc.pin.v20"
+  },
+  "act_pin_save21": {
+   "kind": "flag",
+   "flag": "pin.v21",
+   "value": "$bc.pin.v21"
+  },
+  "act_pin_save22": {
+   "kind": "flag",
+   "flag": "pin.v22",
+   "value": "$bc.pin.v22"
+  },
+  "act_pin_save23": {
+   "kind": "flag",
+   "flag": "pin.v23",
+   "value": "$bc.pin.v23"
+  },
+  "act_pin_ready": {
+   "kind": "flag",
+   "flag": "pin.ready",
+   "value": "$bc.pin.loaded"
+  },
   "act_debug": {
    "kind": "page",
    "page": "debug",
@@ -61,6 +351,357 @@
  },
  "module_outputs": [
   "bc.*"
+ ],
+ "flags": {
+  "pin.ready": 0,
+  "pin.v0": 0,
+  "pin.v1": 0,
+  "pin.v2": 0,
+  "pin.v3": 0,
+  "pin.v4": 0,
+  "pin.v5": 0,
+  "pin.v6": 0,
+  "pin.v7": 0,
+  "pin.v8": 0,
+  "pin.v9": 0,
+  "pin.v10": 0,
+  "pin.v11": 0,
+  "pin.v12": 0,
+  "pin.v13": 0,
+  "pin.v14": 0,
+  "pin.v15": 0,
+  "pin.v16": 0,
+  "pin.v17": 0,
+  "pin.v18": 0,
+  "pin.v19": 0,
+  "pin.v20": 0,
+  "pin.v21": 0,
+  "pin.v22": 0,
+  "pin.v23": 0
+ },
+ "persist_flags": [
+  "pin.v0",
+  "pin.v1",
+  "pin.v2",
+  "pin.v3",
+  "pin.v4",
+  "pin.v5",
+  "pin.v6",
+  "pin.v7",
+  "pin.v8",
+  "pin.v9",
+  "pin.v10",
+  "pin.v11",
+  "pin.v12",
+  "pin.v13",
+  "pin.v14",
+  "pin.v15",
+  "pin.v16",
+  "pin.v17",
+  "pin.v18",
+  "pin.v19",
+  "pin.v20",
+  "pin.v21",
+  "pin.v22",
+  "pin.v23"
+ ],
+ "enforce_gate": {
+  "point": "bc.pin.sync",
+  "max": 1
+ },
+ "enforce": [
+  {
+   "action": "act_pin_ready",
+   "every_ms": 200
+  },
+  {
+   "action": "act_pin_load0",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load1",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load2",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load3",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load4",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load5",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load6",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load7",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load8",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load9",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load10",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load11",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load12",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load13",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load14",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load15",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load16",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load17",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load18",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load19",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load20",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load21",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load22",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_load23",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": false
+  },
+  {
+   "action": "act_pin_save0",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save1",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save2",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save3",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save4",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save5",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save6",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save7",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save8",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save9",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save10",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save11",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save12",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save13",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save14",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save15",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save16",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save17",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save18",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save19",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save20",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save21",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save22",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  },
+  {
+   "action": "act_pin_save23",
+   "every_ms": 200,
+   "flag": "pin.ready",
+   "value": true
+  }
  ],
  "pages": [
   {
@@ -132,12 +773,12 @@
     {
      "type": "image",
      "rect": [
-      603,
-      523,
-      35,
-      35
+      605,
+      525,
+      30,
+      30
      ],
-     "src": "module:bc:player:35",
+     "src": "module:bc:player:30",
      "x_bind": "bc.mk.dx",
      "y_bind": "bc.mk.dy",
      "need_bind": "bc.mk.z1"
@@ -145,15 +786,56 @@
     {
      "type": "image",
      "rect": [
-      585,
-      505,
-      70,
-      70
+      600,
+      520,
+      40,
+      40
      ],
-     "src": "module:bc:player:70",
+     "src": "module:bc:player:40",
      "x_bind": "bc.mk.dx",
      "y_bind": "bc.mk.dy",
      "need_bind": "bc.mk.z2"
+    },
+    {
+     "type": "image",
+     "rect": [
+      588,
+      508,
+      65,
+      65
+     ],
+     "src": "module:bc:player:65",
+     "x_bind": "bc.mk.dx",
+     "y_bind": "bc.mk.dy",
+     "need_bind": "bc.mk.z3"
+    },
+    {
+     "type": "image",
+     "rect": [
+      570,
+      490,
+      100,
+      100
+     ],
+     "src": "module:bc:player:100",
+     "x_bind": "bc.mk.dx",
+     "y_bind": "bc.mk.dy",
+     "need_bind": "bc.mk.z4"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      0,
+      0,
+      1240,
+      1080
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_pin_tap",
+     "payload": "$tap",
+     "need_bind": "bc.pin.mode"
     },
     {
      "type": "image",
@@ -217,78 +899,263 @@
     {
      "type": "image",
      "rect": [
-      300,
-      920,
-      640,
-      130
+      40,
+      986,
+      230,
+      64
      ],
-     "src_bind": "bc.ui.zoom",
+     "src_bind": "bc.ui.zbtn",
      "need_bind": "bc.ui.ok"
     },
     {
      "type": "rect",
      "rect": [
-      290,
-      912,
-      104,
-      104
-     ],
-     "bg": "#00000000",
-     "color": "#00000000",
-     "frame": 0,
-     "on_tap": "act_zoom_out"
-    },
-    {
-     "type": "rect",
-     "rect": [
-      846,
-      912,
-      104,
-      104
-     ],
-     "bg": "#00000000",
-     "color": "#00000000",
-     "frame": 0,
-     "on_tap": "act_zoom_in"
-    },
-    {
-     "type": "rect",
-     "rect": [
-      370,
-      984,
-      120,
+      40,
+      986,
+      230,
       64
      ],
      "bg": "#00000000",
      "color": "#00000000",
      "frame": 0,
-     "on_tap": "act_zoom0"
+     "on_tap": "act_zoom",
+     "on_hold": "act_zbar_open",
+     "hold_ms": 450,
+     "need_bind": "bc.ui.ok"
     },
     {
      "type": "rect",
      "rect": [
-      560,
-      984,
-      120,
-      64
+      0,
+      0,
+      1240,
+      1080
      ],
      "bg": "#00000000",
      "color": "#00000000",
      "frame": 0,
-     "on_tap": "act_zoom1"
+     "on_tap": "act_zbar_close",
+     "need_bind": "bc.zbar"
+    },
+    {
+     "type": "image",
+     "rect": [
+      170,
+      830,
+      900,
+      130
+     ],
+     "src_bind": "bc.ui.zoom",
+     "need_bind": "bc.zbar"
     },
     {
      "type": "rect",
      "rect": [
-      750,
-      984,
+      160,
+      822,
       120,
-      64
+      110
      ],
      "bg": "#00000000",
      "color": "#00000000",
      "frame": 0,
-     "on_tap": "act_zoom2"
+     "on_tap": "act_zoom_out",
+     "need_bind": "bc.zbar"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      960,
+      822,
+      120,
+      110
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_zoom_in",
+     "need_bind": "bc.zbar"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      250,
+      844,
+      140,
+      116
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_zoom0",
+     "need_bind": "bc.zbar"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      400,
+      844,
+      140,
+      116
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_zoom1",
+     "need_bind": "bc.zbar"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      550,
+      844,
+      140,
+      116
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_zoom2",
+     "need_bind": "bc.zbar"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      700,
+      844,
+      140,
+      116
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_zoom3",
+     "need_bind": "bc.zbar"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      850,
+      844,
+      140,
+      116
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_zoom4",
+     "need_bind": "bc.zbar"
+    },
+    {
+     "type": "image",
+     "rect": [
+      1030,
+      30,
+      170,
+      56
+     ],
+     "src_bind": "bc.pin.btn",
+     "need_bind": "bc.ui.ok"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      1030,
+      30,
+      170,
+      56
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_pin_mode",
+     "need_bind": "bc.ui.ok"
+    },
+    {
+     "type": "image",
+     "rect": [
+      1073,
+      98,
+      84,
+      84
+     ],
+     "src_bind": "bc.pin.k0",
+     "need_bind": "bc.pin.mode"
+    },
+    {
+     "type": "image",
+     "rect": [
+      1073,
+      190,
+      84,
+      84
+     ],
+     "src_bind": "bc.pin.k1",
+     "need_bind": "bc.pin.mode"
+    },
+    {
+     "type": "image",
+     "rect": [
+      1073,
+      282,
+      84,
+      84
+     ],
+     "src_bind": "bc.pin.k2",
+     "need_bind": "bc.pin.mode"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      1073,
+      98,
+      84,
+      84
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_pin_type0",
+     "need_bind": "bc.pin.mode"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      1073,
+      190,
+      84,
+      84
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_pin_type1",
+     "need_bind": "bc.pin.mode"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      1073,
+      282,
+      84,
+      84
+     ],
+     "bg": "#00000000",
+     "color": "#00000000",
+     "frame": 0,
+     "on_tap": "act_pin_type2",
+     "need_bind": "bc.pin.mode"
+    },
+    {
+     "type": "image",
+     "rect": [
+      270,
+      984,
+      700,
+      70
+     ],
+     "src": "module:bc:ui:pinhint",
+     "need_bind": "bc.pin.mode"
     },
     {
      "type": "image",

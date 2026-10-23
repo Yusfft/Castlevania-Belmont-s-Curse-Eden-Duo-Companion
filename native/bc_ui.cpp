@@ -98,6 +98,11 @@ void Canvas::Over(int x, int y, float r, float g, float b, float a) {
     p[3] = a + p[3] * (1 - a);
 }
 
+void Canvas::Paint(int x, int y, const Vec4& srgb, float a) {
+    const Vec4 l = Lin(srgb);
+    Over(x, y, l.x * a, l.y * a, l.z * a, a);
+}
+
 void Canvas::Blit(const Sprite& s, float sx, float sy, float sw, float sh, float dx, float dy, float dw, float dh,
                   const Vec4& tint) {
     if (s.tex.Empty() || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0)
@@ -256,7 +261,9 @@ std::vector<std::uint8_t> Frame(const bc_levelmap::Common& c, int w, int h) {
     }
     if (const Sprite* bg = Ui(c, "Map_Background")) {
         // The panel's gold border and corner ornaments; its dark inside is left out.
-        cv.Nine(*bg, 48, 48, 48, 48, 0, 0, static_cast<float>(w), static_cast<float>(h), 0.8f, false);
+        // Darkened: a bright gold edge around the whole screen draws the eye from the map.
+        cv.Nine(*bg, 48, 48, 48, 48, 0, 0, static_cast<float>(w), static_cast<float>(h), 0.8f, false,
+                {0.16f, 0.14f, 0.17f, 1.0f});
     }
     return cv.Encode();
 }
@@ -299,40 +306,98 @@ std::vector<std::uint8_t> TitleBanner(const bc_levelmap::Common& c, const std::s
     return cv.Encode();
 }
 
+const char* const kZoomNames[] = {"Area", "Far", "Mid", "Near", "Close"};
+
 std::vector<std::uint8_t> ZoomBar(const bc_levelmap::Common& c, int zoom, int w, int h) {
     using L = ZoomBarLayout;
     Canvas cv(w, h);
     const float sx = static_cast<float>(w) / L::kW, sy = static_cast<float>(h) / L::kH;
     const float bar_y = L::kBarY * sy;
+    // A dark backing so the bar reads over the map.
+    for (int y = 6; y < h - 6; ++y)
+        for (int x = 6; x < w - 6; ++x)
+            cv.Darken(x, y, 0.82f);
+    if (const Sprite* f = Ui(c, "cartouche"))
+        cv.Nine(*f, 17, 17, 17, 17, 0, 0, static_cast<float>(w), static_cast<float>(h), 1.0f, true,
+                {0.30f, 0.27f, 0.30f, 1.0f});
     if (const Sprite* bar = Ui(c, "Map_Scale"))
         cv.Blit(*bar, (L::kBarX0 - 30) * sx, bar_y - 8 * sy, (L::kBarX1 - L::kBarX0 + 60) * sx, 16 * sy);
     const float btn = L::kButton * sx;
     if (const Sprite* out = Ui(c, "Map_ScaleNavigationDeZoom"))
-        cv.Blit(*out, 0, bar_y - btn / 2, btn, btn);
+        cv.Blit(*out, 12 * sx, bar_y - btn / 2 + 6 * sy, btn, btn);
     if (const Sprite* in = Ui(c, "Map_ScaleNavigationZoom"))
-        cv.Blit(*in, static_cast<float>(w) - btn, bar_y - btn / 2, btn, btn);
-    static const char* const kNames[3] = {"Area", "Sub-area", "Close"};
-    for (int z = 0; z < 3; ++z) {
+        cv.Blit(*in, static_cast<float>(w) - btn - 12 * sx, bar_y - btn / 2 + 6 * sy, btn, btn);
+    for (int z = 0; z < L::kLevels; ++z) {
         const float tx = static_cast<float>(L::Tick(z)) * sx;
         const float size = 24 * sy;
-        const float tw = Canvas::TextWidth(c.font, kNames[z], size);
-        cv.Text(c.font, kNames[z], tx - tw / 2, bar_y + 58 * sy, size, z == zoom ? kGold : Vec4{0.70f, 0.66f, 0.60f, 1});
+        const float tw = Canvas::TextWidth(c.font, kZoomNames[z], size);
+        cv.Text(c.font, kZoomNames[z], tx - tw / 2, bar_y + 58 * sy, size,
+                z == zoom ? kGold : Vec4{0.70f, 0.66f, 0.60f, 1});
     }
     if (const Sprite* cur = Ui(c, "Map_ScaleCursor")) {
         const float cs = 64 * sy;
-        const float tx = static_cast<float>(L::Tick(std::clamp(zoom, 0, 2))) * sx;
+        const float tx = static_cast<float>(L::Tick(std::clamp(zoom, 0, L::kLevels - 1))) * sx;
         cv.Blit(*cur, tx - cs / 2, bar_y - cs / 2, cs, cs);
     }
     return cv.Encode();
 }
 
-std::vector<std::uint8_t> Button(const bc_levelmap::Common& c, const std::string& text, int w, int h) {
+std::vector<std::uint8_t> ZoomButton(const bc_levelmap::Common& c, int zoom, int w, int h) {
+    Canvas cv(w, h);
+    const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+    if (const Sprite* f = Ui(c, "cartouche"))
+        cv.Nine(*f, 17, 17, 17, 17, 0, 0, fw, fh, 1.0f, true);
+    const float cs = 0.78f * fh;
+    if (const Sprite* cur = Ui(c, "Map_ScaleCursor"))
+        cv.Blit(*cur, 0.10f * fh, (fh - cs) / 2, cs, cs);
+    const std::string name = kZoomNames[std::clamp(zoom, 0, ZoomBarLayout::kLevels - 1)];
+    const float size = 0.44f * fh;
+    const float left = 0.10f * fh + cs, room = fw - left - 0.12f * fh;
+    const float tw = Canvas::TextWidth(c.font, name, size);
+    cv.Text(c.font, name, left + (room - tw) / 2, 0.65f * fh, size, kCream);
+    return cv.Encode();
+}
+
+std::vector<std::uint8_t> Button(const bc_levelmap::Common& c, const std::string& text, int w, int h, bool active) {
     Canvas cv(w, h);
     if (const Sprite* f = Ui(c, "cartouche"))
-        cv.Nine(*f, 17, 17, 17, 17, 0, 0, static_cast<float>(w), static_cast<float>(h), 1.0f, true);
+        cv.Nine(*f, 17, 17, 17, 17, 0, 0, static_cast<float>(w), static_cast<float>(h), 1.0f, true,
+                active ? Vec4{1.35f, 1.15f, 0.70f, 1.0f} : Vec4{1, 1, 1, 1});
     const float size = 0.46f * static_cast<float>(h);
     const float tw = Canvas::TextWidth(c.font, text, size);
-    cv.Text(c.font, text, (static_cast<float>(w) - tw) / 2, 0.66f * static_cast<float>(h), size, kCream);
+    cv.Text(c.font, text, (static_cast<float>(w) - tw) / 2, 0.66f * static_cast<float>(h), size,
+            active ? kGold : kCream);
+    return cv.Encode();
+}
+
+std::vector<std::uint8_t> IconCell(const bc_levelmap::Common& c, const std::string& sprite, bool selected, int w,
+                                   int h) {
+    Canvas cv(w, h);
+    const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+    if (const Sprite* f = Ui(c, "cartouche"))
+        cv.Nine(*f, 17, 17, 17, 17, 0, 0, fw, fh, 1.0f, true,
+                selected ? Vec4{1.35f, 1.15f, 0.70f, 1.0f} : Vec4{0.55f, 0.52f, 0.56f, 1.0f});
+    if (selected) {
+        // A gold ring inside the frame.
+        const float r0 = 0.5f * std::min(fw, fh) - 9, r1 = r0 - 3;
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const float dx = std::max(std::fabs(static_cast<float>(x) + 0.5f - fw / 2) - (fw - fh) / 2, 0.0f);
+                const float dy = std::fabs(static_cast<float>(y) + 0.5f - fh / 2);
+                const float d = std::max(dx, dy);
+                if (d <= r0 && d >= r1)
+                    cv.Paint(x, y, kGold, 0.9f);
+            }
+        }
+    }
+    if (const Sprite* s = Ui(c, sprite.c_str())) {
+        const float box = 0.66f * std::min(fw, fh);
+        const float tw = static_cast<float>(s->tex.w), th = static_cast<float>(s->tex.h);
+        const float k = box / std::max(tw, th);
+        const float iw = tw * k, ih = th * k;
+        cv.Blit(*s, (fw - iw) / 2, (fh - ih) / 2, iw, ih,
+                selected ? Vec4{1, 1, 1, 1} : Vec4{0.75f, 0.75f, 0.75f, 1});
+    }
     return cv.Encode();
 }
 

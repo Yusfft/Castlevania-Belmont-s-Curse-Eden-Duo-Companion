@@ -37,6 +37,8 @@ public:
     static float TextWidth(const bc_levelmap::Font& font, const std::string& text, float size, bool small_caps = true);
     /// Black over one pixel with coverage `a`.
     void Darken(int x, int y, float a) { Over(x, y, 0, 0, 0, a); }
+    /// An sRGB colour over one pixel with coverage `a`.
+    void Paint(int x, int y, const bc_shade::Vec4& srgb, float a);
     /// Straight sRGB RGBA8.
     std::vector<std::uint8_t> Encode() const;
 
@@ -51,20 +53,31 @@ std::vector<std::uint8_t> Frame(const bc_levelmap::Common& c, int w, int h);
 /// The level banner with the level and district names. `color` is the level's banner colour.
 std::vector<std::uint8_t> TitleBanner(const bc_levelmap::Common& c, const std::string& title,
                                       const std::string& subtitle, const bc_shade::Vec4& color, int w, int h);
-/// The zoom scale: zoom-out button, scale with the cursor at `zoom` (0..2), zoom-in button, labels.
+/// The zoom scale: zoom-out button, scale with the cursor at `zoom` (0..kLevels-1), zoom-in
+/// button, the levels' names.
 std::vector<std::uint8_t> ZoomBar(const bc_levelmap::Common& c, int zoom, int w, int h);
-/// A framed button with a caption.
-std::vector<std::uint8_t> Button(const bc_levelmap::Common& c, const std::string& text, int w, int h);
+/// The small zoom button: the scale's cursor and the current level's name.
+std::vector<std::uint8_t> ZoomButton(const bc_levelmap::Common& c, int zoom, int w, int h);
+/// A framed button with a caption; `active` lights it (a mode that is on).
+std::vector<std::uint8_t> Button(const bc_levelmap::Common& c, const std::string& text, int w, int h,
+                                 bool active = false);
+/// A square framed cell holding a sprite (a pin symbol); `selected` lights it.
+std::vector<std::uint8_t> IconCell(const bc_levelmap::Common& c, const std::string& sprite, bool selected, int w,
+                                   int h);
 /// A line of text, centred.
 std::vector<std::uint8_t> Label(const bc_levelmap::Common& c, const std::string& text, float size, int w, int h);
 
+/// The zoom levels' names, closest last.
+extern const char* const kZoomNames[];
+
 /// Layout of the zoom bar image (pixels), shared with the page's tap areas.
 struct ZoomBarLayout {
-    static constexpr int kW = 640, kH = 130;
+    static constexpr int kLevels = 5;
+    static constexpr int kW = 900, kH = 130;
     static constexpr int kButton = 84;               // the two buttons, square, at the ends
-    static constexpr int kBarX0 = 130, kBarX1 = 510; // the scale (its three ticks)
+    static constexpr int kBarX0 = 150, kBarX1 = 750; // the scale (its ticks)
     static constexpr int kBarY = 44;
-    static int Tick(int zoom) { return kBarX0 + (kBarX1 - kBarX0) * zoom / 2; }
+    static int Tick(int zoom) { return kBarX0 + (kBarX1 - kBarX0) * zoom / (kLevels - 1); }
 };
 
 } // namespace bc_ui

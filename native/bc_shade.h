@@ -74,7 +74,16 @@ struct Pixel {
     float selected = 0;         // district state at this point
     float completed = 0;
     float time = 0;
+    /// >1 narrows the outline and room-edge transitions (the data texture has 4 texels per
+    /// world unit; drawn larger than the game ever draws it, its bilinear edges go soft).
+    float sharpen = 1;
 };
+
+namespace detail {
+inline float Sharp(float t, float k) {
+    return k <= 1.0f ? t : std::clamp((t - 0.5f) * k + 0.5f, 0.0f, 1.0f);
+}
+} // namespace detail
 
 namespace detail {
 inline float Sat(float x) {
@@ -155,9 +164,9 @@ inline Vec4 ShadeOutsideEdge(const Params& p, const Tex& t, const Pixel& px, boo
     const float shift = 2.0f * (wobble(e.x, p.selected_displace_strength.x) + wobble(e.y, p.selected_displace_strength.y)) +
                         2.0f * wobble(e.z, p.selected_displace_strength.z);
     const Vec4 data_shift = t.Data(u + shift / 3.0f, v + shift / 3.0f);
-    const float inside = 1.0f - data.x;
-    const float edge = Smooth(Sat((data.z - p.edge_min) / (p.edge_max - p.edge_min)));
-    const float edge_shift_t = Sat((data_shift.z - p.edge_min) / (p.edge_max - p.edge_min));
+    const float inside = Sharp(1.0f - data.x, px.sharpen);
+    const float edge = Smooth(Sharp(Sat((data.z - p.edge_min) / (p.edge_max - p.edge_min)), px.sharpen));
+    const float edge_shift_t = Sharp(Sat((data_shift.z - p.edge_min) / (p.edge_max - p.edge_min)), px.sharpen);
     const float edge_sel = std::max(edge, Smooth(edge_shift_t));
     const float sel = px.selected, done = px.completed;
     const auto room = [&](float std_back, float done_back, float sel_back, float std_edge, float done_edge,
@@ -315,9 +324,9 @@ inline Vec4 Shade(const Params& p, const Tex& t, const Pixel& px, const Limits& 
     const Vec4 data_shift = t.Data(u + shift / 3.0f, v + shift / 3.0f);
 
     // Room colours.
-    const float inside = 1.0f - data.x;
-    const float edge = Smooth(Sat((data.z - p.edge_min) / (p.edge_max - p.edge_min)));
-    const float edge_shift_t = Sat((data_shift.z - p.edge_min) / (p.edge_max - p.edge_min));
+    const float inside = Sharp(1.0f - data.x, px.sharpen);
+    const float edge = Smooth(Sharp(Sat((data.z - p.edge_min) / (p.edge_max - p.edge_min)), px.sharpen));
+    const float edge_shift_t = Sharp(Sat((data_shift.z - p.edge_min) / (p.edge_max - p.edge_min)), px.sharpen);
     const float edge_sel = std::max(edge, Smooth(edge_shift_t));
     const float sel = px.selected, done = px.completed;
     const auto room = [&](float std_back, float done_back, float sel_back, float std_edge, float done_edge,

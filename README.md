@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.4.1)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.5.0)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -8,7 +8,7 @@ handheld (developed on an AYN Thor).
 |---|---|
 | Game | Castlevania: Belmont's Curse, title ID `0100BA4026E94000` |
 | Game version | 1.1.0 (build `0F1169AA7D0FA4529C861F96ADEC306E`) |
-| Eden Duo | 1.3.x (package declares `min_runtime` 16) |
+| Eden Duo | 1.3.x (package declares `min_runtime` 22) |
 
 The package ships **no game assets**. The map, its icons and the title font are read at runtime
 from the player's own romfs and drawn by the native module.
@@ -28,12 +28,19 @@ from the player's own romfs and drawn by the native module.
   slides under it; a new section is drawn in the background when needed.
 - **Area title.** The biome and district names in the game's own font (English).
 - **Rooms in the map's vivid palette**, the one the game uses under its map cursor.
-- **The game's map-screen interface.** The gold-edged frame of the map screen, the level banner
-  in the level's colour, and the zoom scale with its − / + buttons, all from the game's own art,
-  with text in the game's font.
-- **Zoom.** The − / + buttons, or tap a level's name on the scale (Area, Sub-area, Close). The
-  whole-area view shows the part of the map the player is in (the main map, a tower, a
-  Z-room). The page opens in the close view.
+- **The game's map-screen interface.** The map screen's frame (darkened, so it does not draw the
+  eye), the level banner in the level's colour, the zoom scale and buttons, all from the game's
+  own art, with text in the game's font.
+- **Zoom.** Five levels: the whole area the player is in (the main map, a tower, a Z-room), then
+  four follow views from 5 to 20 pixels per world unit. The small zoom button shows the level;
+  tap it for the next level out (wrapping to the closest), hold it for the scale with its − / +
+  buttons and the levels' names. The page opens in the closest view, where the map's outlines
+  are drawn sharper than the game's 4-texels-per-unit map texture would give.
+- **Pins.** The Pin button opens three symbols (the game's marker art) under it; with one picked,
+  a tap on the map puts a pin there. Tapping a pin with another symbol picked changes it, with the
+  same symbol takes it away. Up to 24 pins, kept across sessions in the runtime's persisted flags
+  (`persist_flags`, outside the package and the game's save). They are the page's own: the game's
+  map does not show them.
 - **Debug page.** The Debug button (or hold the area name): every step of the live memory chain
   and the map loader's log.
 

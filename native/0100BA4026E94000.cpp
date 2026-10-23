@@ -20,6 +20,7 @@
 // stays drawn underneath until the new one arrives, so there is no blank frame.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -55,7 +56,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.4.1";
+constexpr const char* kVersion = "0.5.0";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -71,8 +72,19 @@ constexpr int kLabelW = 700, kLabelH = 70;
 constexpr double kRecentreX = (kWindowW - kCanvasW) / 2.0 - 90.0;
 constexpr double kRecentreY = (kWindowH - kCanvasH) / 2.0 - 60.0;
 // Pixels per world unit at each zoom level (0 = the whole area).
-constexpr double kZoomScale[] = {0.0, 7.0, 14.0};
-constexpr int kZoomLevels = 3;
+constexpr double kZoomScale[] = {0.0, 5.0, 8.0, 13.0, 20.0};
+constexpr int kZoomLevels = bc_ui::ZoomBarLayout::kLevels;
+static_assert(sizeof(kZoomScale) / sizeof(kZoomScale[0]) == kZoomLevels);
+constexpr int kZoomButtonW = 230, kZoomButtonH = 64;
+constexpr int kPinCell = 84;
+// The page's own pins: the symbols offered, the slots kept (persisted as runtime flags
+// "pin.v<i>", see the manifest), and how close a tap must be to an existing pin to touch it.
+constexpr const char* kPinSprites[] = {"Map_MarkerSet_Cross", "Map_MarkerSet_Chest", "Map_MarkerSet_Eye"};
+constexpr int kPinTypes = 3;
+constexpr int kPinSlots = 24;
+constexpr double kPinTouchPx = 40.0;
+// While pins are being saved or read back, the manifest's flag rules run (gate "bc.pin.sync").
+constexpr double kPinSyncSeconds = 1.5;
 // The player marker: the game draws Map_PlayerIcon 5 units tall (the page sizes it per zoom
 // level), 0.7 units above the player.
 constexpr double kPlayerLift = 0.7;
@@ -219,8 +231,41 @@ struct Window {
     int zoom = -1;
     int cx = 0, cy = 0;  // window centre, world units
     u64 explore = 0;
+    u64 pins = 0;        // pins revision drawn
     std::string key;
 };
+
+/// A pin the player put on the page's map (not in the game).
+struct Pin {
+    int biome = -1; // level map number; -1 = free slot
+    int type = 0;   // index into kPinSprites
+    float x = 0, y = 0;
+};
+
+/// Pins as stored in the persisted flags: 0 = empty; else bit 48 set, biome in bits 43..47,
+/// type in 40..42, x and y in quarter units (offset by 2^19) in 20..39 and 0..19. Under 2^53,
+/// so a JSON number keeps it exactly.
+s64 EncodePin(const Pin& p) {
+    if (p.biome < 0)
+        return 0;
+    const auto q = [](float v) {
+        return static_cast<s64>(std::clamp<long>(std::lround(v * 4.0f), -(1 << 19) + 1, (1 << 19) - 1) + (1 << 19));
+    };
+    return (s64{1} << 48) | (static_cast<s64>(p.biome & 31) << 43) | (static_cast<s64>(p.type & 7) << 40) |
+           (q(p.x) << 20) | q(p.y);
+}
+Pin DecodePin(s64 v) {
+    Pin p;
+    if (v <= 0 || !((v >> 48) & 1) || (v >> 49) != 0)
+        return p;
+    p.biome = static_cast<int>((v >> 43) & 31);
+    p.type = static_cast<int>((v >> 40) & 7);
+    if (p.type >= kPinTypes)
+        p.type = 0;
+    p.x = static_cast<float>(((v >> 20) & 0xFFFFF) - (1 << 19)) / 4.0f;
+    p.y = static_cast<float>((v & 0xFFFFF) - (1 << 19)) / 4.0f;
+    return p;
+}
 
 struct Title {
     std::string title, subtitle;
@@ -267,11 +312,30 @@ struct Instance {
     std::deque<std::pair<u64, Title>> titles;
     std::atomic<int> last_render_ms{0};
 
+    // Pins: the slots, read back from the persisted flags once (pin_load:<i> actions), then
+    // saved through them (the manifest copies "bc.pin.v<i>" into "pin.v<i>").
+    std::mutex pin_mutex;
+    std::array<Pin, kPinSlots> pins{};
+    u64 pins_rev = 1;
+    std::deque<std::pair<u64, std::shared_ptr<const std::vector<Pin>>>> pin_snapshots;
+    u32 pins_loaded_mask = 0;
+    bool pins_loaded = false;
+    bool pin_mode = false;
+    int pin_type = 0;
+    std::chrono::steady_clock::time_point pin_sync_until{};
+    // How a canvas pixel maps to the world in the view on screen (for taps).
+    bool tap_view_ok = false;
+    int tap_biome = -1;
+    bc_mapdraw::View tap_view;
+
     // Tick-thread state.
     bc_live::Reader reader;
     bc_live::State live;
     u64 samples = 0;
-    int zoom = 2;
+    int zoom = kZoomLevels - 1;
+    // The zoom scale is shown (held zoom button) until a level is picked or it times out.
+    bool zoom_bar = false;
+    std::chrono::steady_clock::time_point zoom_bar_since{};
     u64 explore_id = 1; // never a real id: the first sample builds the snapshot
     std::shared_ptr<const bc_mapdraw::Exploration> exploration;
     std::shared_ptr<const bc_render::Fog> fog;
@@ -682,9 +746,55 @@ void PublishDebug(const EdenDsmodHostApi* h, const bc_live::State& s) {
 
 std::string MapKey(const Window& w) {
     char key[200];
-    std::snprintf(key, sizeof key, "module:bc:%s:%d:%d:%d:%d:%llx", w.legacy ? "map:2" : "lm:3", w.biome, w.zoom,
-                  w.cx, w.cy, static_cast<unsigned long long>(w.explore));
+    if (w.legacy)
+        std::snprintf(key, sizeof key, "module:bc:map:2:%d:%d:%d:%d:%llx", w.biome, w.zoom, w.cx, w.cy,
+                      static_cast<unsigned long long>(w.explore));
+    else
+        std::snprintf(key, sizeof key, "module:bc:lm:4:%d:%d:%d:%d:%llx:%llx", w.biome, w.zoom, w.cx, w.cy,
+                      static_cast<unsigned long long>(w.explore), static_cast<unsigned long long>(w.pins));
     return key;
+}
+
+/// The pins on screen, saved by revision for the renders that ask for it.
+std::shared_ptr<const std::vector<Pin>> PinSnapshot(Instance* inst, u64 rev) {
+    std::lock_guard lock(inst->pin_mutex);
+    if (auto p = Instance::Lookup(inst->pin_snapshots, rev))
+        return *p;
+    auto v = std::make_shared<std::vector<Pin>>();
+    for (const Pin& p : inst->pins)
+        if (p.biome >= 0)
+            v->push_back(p);
+    Instance::Remember(inst->pin_snapshots, rev, std::shared_ptr<const std::vector<Pin>>(v), 8);
+    return v;
+}
+
+void PublishPins(Instance* inst, const EdenDsmodHostApi* h) {
+    std::lock_guard lock(inst->pin_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    const bool sync = !inst->pins_loaded || now < inst->pin_sync_until;
+    PublishI(h, "bc.pin.sync", sync ? 1 : 0);
+    PublishI(h, "bc.pin.loaded", inst->pins_loaded ? 1 : 0);
+    if (inst->pins_loaded) {
+        char name[24];
+        for (int i = 0; i < kPinSlots; ++i) {
+            std::snprintf(name, sizeof name, "bc.pin.v%d", i);
+            PublishI(h, name, EncodePin(inst->pins[static_cast<std::size_t>(i)]));
+        }
+    }
+    PublishI(h, "bc.pin.mode", inst->pin_mode ? 1 : 0);
+    PublishI(h, "bc.pin.plain", inst->pin_mode ? 0 : 1);
+    char key[48];
+    for (int t = 0; t < kPinTypes; ++t) {
+        std::snprintf(key, sizeof key, "module:bc:ui:pin:%d:%d", t, t == inst->pin_type ? 1 : 0);
+        char name[24];
+        std::snprintf(name, sizeof name, "bc.pin.k%d", t);
+        PublishT(h, name, key);
+    }
+    PublishT(h, "bc.pin.btn", inst->pin_mode ? "module:bc:ui:btn:pin:1" : "module:bc:ui:btn:pin:0");
+    int count = 0;
+    for (const Pin& p : inst->pins)
+        count += p.biome >= 0;
+    PublishI(h, "bc.pin.n", count);
 }
 
 void Sample(void* p, const EdenDsmodHostApi* h) {
@@ -879,7 +989,14 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 const bool redraw_due =
                     cur.explore != inst->explore_id &&
                     std::chrono::duration<double>(now - inst->last_window).count() >= kRedrawSeconds;
-                if (!same_view || far || redraw_due) {
+                u64 pins_rev;
+                {
+                    std::lock_guard lock(inst->pin_mutex);
+                    pins_rev = inst->pins_rev;
+                }
+                // A pin put or taken away shows at once.
+                const bool pins_changed = same_view && lm && cur.pins != pins_rev;
+                if (!same_view || far || redraw_due || pins_changed) {
                     inst->last_window = now;
                     // Keep the old window underneath while the new one loads.
                     inst->prev = same_view ? cur : Window{};
@@ -891,7 +1008,9 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                         cur.cx = static_cast<int>(std::lround(pwx));
                         cur.cy = static_cast<int>(std::lround(pwy));
                     }
-                    cur.explore = inst->explore_id;
+                    if (!pins_changed || redraw_due || far || !same_view)
+                        cur.explore = inst->explore_id;
+                    cur.pins = pins_rev;
                     cur.key = MapKey(cur);
                 }
                 const auto offset = [&](const Window& w, double& ox, double& oy) {
@@ -903,6 +1022,17 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 };
                 double ox, oy;
                 offset(cur, ox, oy);
+                {
+                    // Canvas pixel -> world, as the window is shown (rounded offsets).
+                    const auto v = bc_mapdraw::CenteredView(cur.cx, cur.cy, scale, kWindowW, kWindowH);
+                    std::lock_guard lock(inst->pin_mutex);
+                    inst->tap_view = v;
+                    inst->tap_view.x0 = v.x0 - static_cast<double>(std::lround(ox)) / scale;
+                    inst->tap_view.y1 = v.y1 + static_cast<double>(std::lround(oy)) / scale;
+                    inst->tap_view.w = kCanvasW, inst->tap_view.h = kCanvasH;
+                    inst->tap_view_ok = !cur.legacy;
+                    inst->tap_biome = number;
+                }
                 PublishT(h, "bc.map.key", cur.key);
                 PublishI(h, "bc.map.ox", std::lround(ox));
                 PublishI(h, "bc.map.oy", std::lround(oy));
@@ -927,9 +1057,20 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 w.biome = number;
                 w.zoom = 0;
                 w.explore = inst->explore_id;
+                {
+                    std::lock_guard lock(inst->pin_mutex);
+                    w.pins = inst->pins_rev;
+                }
                 if (lm && pos_mode) {
                     // The navigation zone the player is in (the main map, a tower, a Z-room...).
                     w.cx = lm->NavZoneAt(static_cast<float>(pwx), static_cast<float>(pwy));
+                }
+                {
+                    std::lock_guard lock(inst->pin_mutex);
+                    inst->tap_view_ok = lm != nullptr;
+                    inst->tap_biome = number;
+                    if (lm)
+                        inst->tap_view = bc_mapdraw::FitZone(*lm, w.cx, kCanvasW, kCanvasH);
                 }
                 PublishT(h, "bc.map.akey", MapKey(w));
                 if (pos_mode) {
@@ -956,6 +1097,21 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         } else {
             PublishI(h, "bc.map.pshow", 0);
         }
+        if (!follow && !area) {
+            std::lock_guard lock(inst->pin_mutex);
+            inst->tap_view_ok = false;
+        }
+        PublishPins(inst, h);
+        {
+            // The zoom scale closes by itself after a while.
+            if (inst->zoom_bar &&
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - inst->zoom_bar_since).count() > 6.0)
+                inst->zoom_bar = false;
+            PublishI(h, "bc.zbar", inst->zoom_bar ? 1 : 0);
+            char zb[40];
+            std::snprintf(zb, sizeof zb, "module:bc:ui:zbtn:%d", zoom);
+            PublishT(h, "bc.ui.zbtn", zb);
+        }
         {
             bool ui_ok;
             {
@@ -979,6 +1135,8 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         PublishI(h, "bc.mk.z0", marker && zoom == 0);
         PublishI(h, "bc.mk.z1", marker && zoom == 1);
         PublishI(h, "bc.mk.z2", marker && zoom == 2);
+        PublishI(h, "bc.mk.z3", marker && zoom == 3);
+        PublishI(h, "bc.mk.z4", marker && zoom == 4);
         PublishI(h, "bc.mk.dx", std::lround(mk_dx));
         PublishI(h, "bc.mk.dy", std::lround(mk_dy));
 
@@ -1008,6 +1166,55 @@ void Configure(void* p, const EdenDsmodHostExtensions* host) {
     inst->codec_cv.notify_all();
 }
 
+/// A tap on the map in pin mode: `packed` is the tap point on the canvas (x high, y low 32
+/// bits). Near a pin: a pin of another symbol takes the selected one, a pin of the same symbol
+/// goes away. Elsewhere: a new pin.
+bool PinTap(Instance* inst, int64_t packed) {
+    const double cx = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(packed) >> 32));
+    const double cy = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(packed) & 0xFFFFFFFFu));
+    std::lock_guard lock(inst->pin_mutex);
+    if (!inst->pin_mode || !inst->pins_loaded || !inst->tap_view_ok || inst->tap_biome < 0)
+        return false;
+    const auto& v = inst->tap_view;
+    const double wx = v.x0 + cx / v.scale, wy = v.y1 - cy / v.scale;
+    // The pin icons are drawn centred on their point.
+    int best = -1;
+    double best_d = kPinTouchPx;
+    for (int i = 0; i < kPinSlots; ++i) {
+        const Pin& p = inst->pins[static_cast<std::size_t>(i)];
+        if (p.biome != inst->tap_biome)
+            continue;
+        double px, py;
+        v.WorldToPixel(p.x, p.y, px, py);
+        const double d = std::hypot(px - cx, py - cy);
+        if (d < best_d)
+            best_d = d, best = i;
+    }
+    if (best >= 0) {
+        Pin& p = inst->pins[static_cast<std::size_t>(best)];
+        if (p.type != inst->pin_type)
+            p.type = inst->pin_type;
+        else
+            p = Pin{};
+    } else {
+        int slot = -1;
+        for (int i = 0; i < kPinSlots && slot < 0; ++i)
+            if (inst->pins[static_cast<std::size_t>(i)].biome < 0)
+                slot = i;
+        if (slot < 0)
+            return false; // full: the refused haptic says so
+        Pin& p = inst->pins[static_cast<std::size_t>(slot)];
+        p.biome = inst->tap_biome;
+        p.type = inst->pin_type;
+        p.x = static_cast<float>(wx);
+        p.y = static_cast<float>(wy);
+    }
+    ++inst->pins_rev;
+    inst->pin_sync_until =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int>(kPinSyncSeconds * 1000));
+    return true;
+}
+
 EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
     auto* inst = static_cast<Instance*>(p);
     if (!inst || !action)
@@ -1015,14 +1222,47 @@ EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
     try {
         const std::string a = action;
         // Close -> medium -> whole area -> close.
+        const auto keep_bar = [inst] { inst->zoom_bar_since = std::chrono::steady_clock::now(); };
         if (a == "zoom") {
             inst->zoom = inst->zoom == 0 ? kZoomLevels - 1 : inst->zoom - 1;
         } else if (a == "zoom_in") {
             inst->zoom = std::min(inst->zoom + 1, kZoomLevels - 1);
+            keep_bar();
         } else if (a == "zoom_out") {
             inst->zoom = std::max(inst->zoom - 1, 0);
+            keep_bar();
         } else if (a == "zoom_set") {
             inst->zoom = static_cast<int>(std::clamp<int64_t>(argument, 0, kZoomLevels - 1));
+            inst->zoom_bar = false;
+        } else if (a == "zbar_open") {
+            inst->zoom_bar = true;
+            keep_bar();
+        } else if (a == "zbar_close") {
+            inst->zoom_bar = false;
+        } else if (a == "pin_mode") {
+            std::lock_guard lock(inst->pin_mutex);
+            inst->pin_mode = !inst->pin_mode;
+        } else if (a == "pin_type") {
+            std::lock_guard lock(inst->pin_mutex);
+            inst->pin_type = static_cast<int>(std::clamp<int64_t>(argument, 0, kPinTypes - 1));
+        } else if (a == "pin_tap") {
+            return PinTap(inst, argument) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        } else if (a.rfind("pin_load:", 0) == 0) {
+            const int i = std::atoi(a.c_str() + 9);
+            if (i < 0 || i >= kPinSlots)
+                return EDEN_DSMOD_FALSE;
+            std::lock_guard lock(inst->pin_mutex);
+            if (!inst->pins_loaded) {
+                inst->pins[static_cast<std::size_t>(i)] = DecodePin(argument);
+                inst->pins_loaded_mask |= 1u << i;
+                if (inst->pins_loaded_mask == (kPinSlots >= 32 ? ~0u : (1u << kPinSlots) - 1)) {
+                    inst->pins_loaded = true;
+                    ++inst->pins_rev;
+                    // Keep the rules running a moment: they switch from reading to saving.
+                    inst->pin_sync_until = std::chrono::steady_clock::now() +
+                                           std::chrono::milliseconds(static_cast<int>(kPinSyncSeconds * 1000));
+                }
+            }
         } else {
             return EDEN_DSMOD_FALSE;
         }
@@ -1066,12 +1306,26 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
     } else if (std::sscanf(what.c_str(), "zoom:%d", &zoom) == 1) {
         w = kZoomBarW, h = kZoomBarH;
         px = bc_ui::ZoomBar(*common, zoom, w, h);
+    } else if (std::sscanf(what.c_str(), "zbtn:%d", &zoom) == 1) {
+        w = kZoomButtonW, h = kZoomButtonH;
+        px = bc_ui::ZoomButton(*common, zoom, w, h);
     } else if (what == "btn:debug" || what == "btn:map") {
         w = kButtonW, h = kButtonH;
         px = bc_ui::Button(*common, what == "btn:debug" ? "Debug" : "Map", w, h);
+    } else if (what == "btn:pin:0" || what == "btn:pin:1") {
+        w = kButtonW, h = kButtonH;
+        px = bc_ui::Button(*common, "Pin", w, h, what == "btn:pin:1");
+    } else if (int t = 0, sel = 0; std::sscanf(what.c_str(), "pin:%d:%d", &t, &sel) == 2) {
+        if (t < 0 || t >= kPinTypes)
+            return false;
+        w = h = kPinCell;
+        px = bc_ui::IconCell(*common, kPinSprites[t], sel != 0, w, h);
     } else if (what == "wait") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common, "Waiting for the game", 40, w, h);
+    } else if (what == "pinhint") {
+        w = kLabelW, h = kLabelH;
+        px = bc_ui::Label(*common, "Tap the map to place a pin", 34, w, h);
     } else if (what == "debug") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common, "Debug", 48, w, h);
@@ -1104,7 +1358,7 @@ bool LoadTitle(Instance* inst, u64 id, void* receiver, EdenDsmodImageSink sink) 
 /// prefabs (ui-gamemenus) draw their icon under a "DisplayParent" scaled 5x, the death icon
 /// raised by 0.25 inside it.
 std::vector<bc_mapdraw::ExtraIcon> MapExtras(const bc_levelmap::LevelMap& lm, const bc_levelmap::Common& c,
-                                             const bc_mapdraw::Exploration& ex) {
+                                             const bc_mapdraw::Exploration& ex, const std::vector<Pin>& pins) {
     constexpr float kItemScale = 5.0f, kDeathRaise = 0.25f;
     std::vector<bc_mapdraw::ExtraIcon> out;
     const auto add = [&](const std::string& sprite, float x, float y) {
@@ -1126,11 +1380,16 @@ std::vector<bc_mapdraw::ExtraIcon> MapExtras(const bc_levelmap::LevelMap& lm, co
         if (const auto t = c.marker_types.find(m.type_guid); t != c.marker_types.end())
             add(t->second, m.x, m.y);
     }
+    // The page's own pins, over the game's markers.
+    for (const Pin& p : pins) {
+        if (p.biome == lm.number && p.type >= 0 && p.type < kPinTypes)
+            add(kPinSprites[p.type], p.x, p.y);
+    }
     return out;
 }
 
-bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64 explore, void* receiver,
-                       EdenDsmodImageSink sink) {
+bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64 explore, u64 pins_rev,
+                       void* receiver, EdenDsmodImageSink sink) {
     const auto lm = inst->WaitLevelMap(number, 30);
     if (!lm)
         return false;
@@ -1154,8 +1413,10 @@ bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64
     const auto reveal = bc_mapdraw::BuildReveal(*lm, *ex);
     bc_mapdraw::RenderOptions opt;
     opt.threads = kRenderThreads;
-    if (common && !lm->level_guid.empty())
-        opt.extra = MapExtras(*lm, *common, *ex);
+    if (common) {
+        const auto pins = PinSnapshot(inst, pins_rev);
+        opt.extra = MapExtras(*lm, *common, *ex, *pins);
+    }
     std::vector<u8> px;
     int w, h;
     if (zoom == 0) {
@@ -1233,9 +1494,10 @@ EdenDsmodBool LoadImage(void* p, const EdenDsmodHostApi*, const char* key, void*
         if (std::sscanf(key, "module:bc:title:%llx", &id) == 1)
             return LoadTitle(inst, id, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         int number = 0, zoom = 0, cx = 0, cy = 0;
-        if (std::sscanf(key, "module:bc:lm:3:%d:%d:%d:%d:%llx", &number, &zoom, &cx, &cy, &id) == 5)
-            return LoadLevelMapImage(inst, number, zoom, cx, cy, id, receiver, sink) ? EDEN_DSMOD_TRUE
-                                                                                   : EDEN_DSMOD_FALSE;
+        unsigned long long pins = 0;
+        if (std::sscanf(key, "module:bc:lm:4:%d:%d:%d:%d:%llx:%llx", &number, &zoom, &cx, &cy, &id, &pins) == 6)
+            return LoadLevelMapImage(inst, number, zoom, cx, cy, id, pins, receiver, sink) ? EDEN_DSMOD_TRUE
+                                                                                         : EDEN_DSMOD_FALSE;
         if (std::sscanf(key, "module:bc:map:2:%d:%d:%d:%d:%llx", &number, &zoom, &cx, &cy, &id) == 5)
             return LoadLegacyImage(inst, number, zoom, cx, cy, id, receiver, sink) ? EDEN_DSMOD_TRUE
                                                                                  : EDEN_DSMOD_FALSE;

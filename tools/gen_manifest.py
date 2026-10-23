@@ -16,14 +16,23 @@ BG = "#FF0C0A10"
 
 # Player marker sizes per zoom level (the game draws it 5 world units tall; 7 and 14 px per
 # unit in the medium and close views, a fixed size in the whole-area view).
-MARKER = {"bc.mk.z0": 30, "bc.mk.z1": 35, "bc.mk.z2": 70}
+# Player marker sizes per zoom level: the game draws it 5 world units tall (5, 8, 13 and 20 px
+# per unit in the four follow views, never under 30 px), a fixed size in the whole-area view.
+MARKER = {"bc.mk.z0": 30, "bc.mk.z1": 30, "bc.mk.z2": 40, "bc.mk.z3": 65, "bc.mk.z4": 100}
 TITLE_W, TITLE_H = 640, 344  # must match kTitleW / kTitleH in 0100BA4026E94000.cpp
-ZOOM_W, ZOOM_H = 640, 130     # bc_ui::ZoomBarLayout
-ZOOM_X, ZOOM_Y = (W - ZOOM_W) // 2, H - ZOOM_H - 30
-ZOOM_TICKS = [130, 320, 510]  # ZoomBarLayout::Tick(0..2)
+ZOOM_W, ZOOM_H = 900, 130     # bc_ui::ZoomBarLayout
+ZOOM_LEVELS = 5
+ZOOM_X, ZOOM_Y = (W - ZOOM_W) // 2, H - ZOOM_H - 120
+ZOOM_TICKS = [150 + (750 - 150) * z // (ZOOM_LEVELS - 1) for z in range(ZOOM_LEVELS)]  # ZoomBarLayout::Tick
 ZOOM_BAR_Y = 44
+ZBTN_W, ZBTN_H = 230, 64      # kZoomButtonW / kZoomButtonH
+ZBTN_X, ZBTN_Y = 40, H - ZBTN_H - 30
+PIN_CELL = 84                 # kPinCell
+PIN_TYPES = 3                 # kPinTypes
+PIN_SLOTS = 24                # kPinSlots
 BTN_W, BTN_H = 170, 56        # kButtonW / kButtonH
 LABEL_W, LABEL_H = 700, 70    # kLabelW / kLabelH
+PIN_X, PIN_Y = W - BTN_W - 40, 30
 
 
 def label(rect, text=None, bind_text=None, scale=4, color=TEXT, **kw):
@@ -78,6 +87,8 @@ map_page = {
          "need_bind": "bc.map.area"},
         # The game's player marker, centred; it only moves in the whole-area view.
         *[marker(b, sz) for b, sz in MARKER.items()],
+        # Pin mode: a tap anywhere on the map (under the buttons) goes to the module.
+        rect([0, 0, W, H], "#00000000", on_tap="act_pin_tap", payload="$tap", need_bind="bc.pin.mode"),
         # The map screen's gold-edged frame (game art, drawn by the module).
         {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:frame", "need_bind": "bc.ui.ok"},
         {"type": "image", "rect": [(W - LABEL_W) // 2, 505, LABEL_W, LABEL_H], "src": "module:bc:ui:wait",
@@ -90,13 +101,30 @@ map_page = {
          "need_bind": "bc.title.img"},
         label([36, 30, 900, 40], bind_text="bc.title", scale=5, color=GOLD,
               need_bind="!bc.title.img"),
-        # Zoom scale: - and + buttons, or tap a level's name.
-        {"type": "image", "rect": [ZOOM_X, ZOOM_Y, ZOOM_W, ZOOM_H], "src_bind": "bc.ui.zoom",
+        # Zoom: a small button (tap: next level out, wrapping to the closest; hold: the scale).
+        {"type": "image", "rect": [ZBTN_X, ZBTN_Y, ZBTN_W, ZBTN_H], "src_bind": "bc.ui.zbtn",
          "need_bind": "bc.ui.ok"},
-        tap([ZOOM_X - 10, ZOOM_Y + ZOOM_BAR_Y - 52, 104, 104], "act_zoom_out"),
-        tap([ZOOM_X + ZOOM_W - 94, ZOOM_Y + ZOOM_BAR_Y - 52, 104, 104], "act_zoom_in"),
-        *[tap([ZOOM_X + t - 60, ZOOM_Y + ZOOM_BAR_Y + 20, 120, 64], "act_zoom%d" % z)
+        tap([ZBTN_X, ZBTN_Y, ZBTN_W, ZBTN_H], "act_zoom") | {"on_hold": "act_zbar_open", "hold_ms": 450,
+                                                           "need_bind": "bc.ui.ok"},
+        # The scale, over a layer that closes it: - and + buttons, or tap a level's name.
+        rect([0, 0, W, H], "#00000000", on_tap="act_zbar_close", need_bind="bc.zbar"),
+        {"type": "image", "rect": [ZOOM_X, ZOOM_Y, ZOOM_W, ZOOM_H], "src_bind": "bc.ui.zoom",
+         "need_bind": "bc.zbar"},
+        tap([ZOOM_X - 10, ZOOM_Y + ZOOM_BAR_Y - 52, 120, 110], "act_zoom_out") | {"need_bind": "bc.zbar"},
+        tap([ZOOM_X + ZOOM_W - 110, ZOOM_Y + ZOOM_BAR_Y - 52, 120, 110], "act_zoom_in") | {"need_bind": "bc.zbar"},
+        *[tap([ZOOM_X + t - 70, ZOOM_Y + ZOOM_BAR_Y - 30, 140, 116], "act_zoom%d" % z) | {"need_bind": "bc.zbar"}
           for z, t in enumerate(ZOOM_TICKS)],
+        # Pins: the button opens the symbols under it; then a tap on the map puts a pin there
+        # (on a pin: another symbol replaces it, the same symbol takes it away).
+        {"type": "image", "rect": [PIN_X, PIN_Y, BTN_W, BTN_H], "src_bind": "bc.pin.btn", "need_bind": "bc.ui.ok"},
+        tap([PIN_X, PIN_Y, BTN_W, BTN_H], "act_pin_mode") | {"need_bind": "bc.ui.ok"},
+        *[{"type": "image", "rect": [PIN_X + BTN_W // 2 - PIN_CELL // 2, PIN_Y + BTN_H + 12 + k * (PIN_CELL + 8),
+                                     PIN_CELL, PIN_CELL],
+           "src_bind": "bc.pin.k%d" % k, "need_bind": "bc.pin.mode"} for k in range(PIN_TYPES)],
+        *[tap([PIN_X + BTN_W // 2 - PIN_CELL // 2, PIN_Y + BTN_H + 12 + k * (PIN_CELL + 8), PIN_CELL, PIN_CELL],
+              "act_pin_type%d" % k) | {"need_bind": "bc.pin.mode"} for k in range(PIN_TYPES)],
+        {"type": "image", "rect": [(W - LABEL_W) // 2, H - LABEL_H - 26, LABEL_W, LABEL_H],
+         "src": "module:bc:ui:pinhint", "need_bind": "bc.pin.mode"},
         # Debug page.
         {"type": "image", "rect": [W - BTN_W - 40, H - BTN_H - 34, BTN_W, BTN_H], "src": "module:bc:ui:btn:debug",
          "need_bind": "bc.ui.ok"},
@@ -172,7 +200,7 @@ manifest = {
     "format": 1,
     "title_id": "0100BA4026E94000",
     "name": "Belmonts Curse map",
-    "min_runtime": 16,
+    "min_runtime": 22,
     "requires_module": True,
     "_note": "Castlevania: Belmont's Curse 1.1.0 (build 0F1169AA7D0FA452). The map, its icons "
              "and the title font are read by the module from the player's own romfs; nothing "
@@ -186,13 +214,34 @@ manifest = {
         "act_zoom": {"kind": "module", "action": "zoom", "argument": 0},
         "act_zoom_in": {"kind": "module", "action": "zoom_in", "argument": 0},
         "act_zoom_out": {"kind": "module", "action": "zoom_out", "argument": 0},
-        "act_zoom0": {"kind": "module", "action": "zoom_set", "argument": 0},
-        "act_zoom1": {"kind": "module", "action": "zoom_set", "argument": 1},
-        "act_zoom2": {"kind": "module", "action": "zoom_set", "argument": 2},
+        **{"act_zoom%d" % z: {"kind": "module", "action": "zoom_set", "argument": z} for z in range(ZOOM_LEVELS)},
+        "act_zbar_open": {"kind": "module", "action": "zbar_open", "argument": 0},
+        "act_zbar_close": {"kind": "module", "action": "zbar_close", "argument": 0},
+        "act_pin_mode": {"kind": "module", "action": "pin_mode", "argument": 0},
+        **{"act_pin_type%d" % k: {"kind": "module", "action": "pin_type", "argument": k} for k in range(PIN_TYPES)},
+        "act_pin_tap": {"kind": "module", "action": "pin_tap", "argument": "$payload"},
+        # Pin storage: the slots live in persisted runtime flags. While the module asks
+        # ("bc.pin.sync"), it reads them back once ("pin.ready" 0) and then has its slots copied
+        # into them ("pin.ready" 1).
+        **{"act_pin_load%d" % i: {"kind": "module", "action": "pin_load:%d" % i, "argument": "$@flag:pin.v%d" % i}
+           for i in range(PIN_SLOTS)},
+        **{"act_pin_save%d" % i: {"kind": "flag", "flag": "pin.v%d" % i, "value": "$bc.pin.v%d" % i}
+           for i in range(PIN_SLOTS)},
+        "act_pin_ready": {"kind": "flag", "flag": "pin.ready", "value": "$bc.pin.loaded"},
         "act_debug": {"kind": "page", "page": "debug", "transition": "fade", "duration_ms": 150},
         "act_map": {"kind": "page", "page": "map", "transition": "fade", "duration_ms": 150},
     },
     "module_outputs": ["bc.*"],
+    "flags": {"pin.ready": 0, **{"pin.v%d" % i: 0 for i in range(PIN_SLOTS)}},
+    "persist_flags": ["pin.v%d" % i for i in range(PIN_SLOTS)],
+    "enforce_gate": {"point": "bc.pin.sync", "max": 1},
+    "enforce": [
+        {"action": "act_pin_ready", "every_ms": 200},
+        *[{"action": "act_pin_load%d" % i, "every_ms": 200, "flag": "pin.ready", "value": False}
+          for i in range(PIN_SLOTS)],
+        *[{"action": "act_pin_save%d" % i, "every_ms": 200, "flag": "pin.ready", "value": True}
+          for i in range(PIN_SLOTS)],
+    ],
     "pages": [map_page, {"id": "debug", "title": "Debug", "widgets": debug_widgets}],
 }
 
