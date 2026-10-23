@@ -11,9 +11,11 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       BUILD_ID: 0F1169AA7D0FA4529C861F96ADEC306E00000000000000000000000000000000
-      VERSION: 0.1.0
     steps:
       - uses: actions/checkout@v4
+
+      - name: Version
+        run: echo "VERSION=$(tr -d '[:space:]' < package/VERSION)" >> "$GITHUB_ENV"
 
       - name: Android NDK
         run: |
