@@ -54,7 +54,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.3.1";
+constexpr const char* kVersion = "0.3.2";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -269,6 +269,8 @@ struct Instance {
     std::shared_ptr<const bc_mapdraw::Exploration> exploration;
     std::shared_ptr<const bc_render::Fog> fog;
     Window cur, prev;
+    std::string last_world;
+    double last_wx = 0, last_wy = 0;
     std::chrono::steady_clock::time_point last_window{};
     double cost_us = 0;
 
@@ -770,6 +772,20 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 }
             }
         }
+        // No position yet (the game writes it once the player moves): the last known one in this
+        // world, else the current room's chunk from the live room data.
+        if (pos_mode) {
+            inst->last_world = s.world_name;
+            inst->last_wx = pwx, inst->last_wy = pwy;
+        } else if (s.room_ok && inst->last_world == s.world_name) {
+            pwx = inst->last_wx, pwy = inst->last_wy;
+            pos_mode = 3;
+        } else if (s.room_ok && s.rm_ok && lm) {
+            // positionCoord + (0, -1) edition offset is the usual chunk origin.
+            pwx = (s.room_x + s.chunk_x + 0.5) * lm->chunk_w;
+            pwy = (s.room_y - 1 + s.chunk_y + 0.5) * lm->chunk_h;
+            pos_mode = 4;
+        }
         PublishI(h, "bc.pos.mode", pos_mode);
 
         // Title: the game's level and district names.
@@ -858,7 +874,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 PublishI(h, "bc.map.pshow", prev_ok);
                 marker = true;
                 mk_dy = -kPlayerLift * scale;
-            } else {
+            } else if (zoom == 0) {
                 // Whole area on screen; the marker moves instead of the map.
                 area = true;
                 inst->cur.valid = false;

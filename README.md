@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.3.1)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.3.2)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android

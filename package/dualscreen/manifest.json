@@ -133,15 +133,14 @@
     {
      "type": "label",
      "rect": [
-      0,
+      460,
       520,
-      1240,
+      360,
       40
      ],
      "text_scale": 4,
      "color": "#FF9A8FB0",
      "text": "WAITING FOR THE GAME",
-     "align": "center",
      "need_bind": "!bc.map.ready"
     },
     {

@@ -68,7 +68,8 @@ map_page = {
          "need_bind": "bc.map.area"},
         # The game's player marker, centred; it only moves in the whole-area view.
         *[marker(b, sz) for b, sz in MARKER.items()],
-        label([0, 520, W, 40], text="WAITING FOR THE GAME", scale=4, color=DIM, align="center",
+        # Placed by hand (20 glyphs of 16 px): a centred label opens shifted on some hosts.
+        label([W // 2 - 160, 520, 360, 40], text="WAITING FOR THE GAME", scale=4, color=DIM,
               need_bind="!bc.map.ready"),
         # A tap anywhere changes the zoom.
         rect([0, 0, W, H], "#00000000", on_tap="act_zoom"),
