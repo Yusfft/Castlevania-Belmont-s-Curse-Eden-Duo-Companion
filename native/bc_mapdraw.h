@@ -70,6 +70,9 @@ struct RenderOptions {
     int threads = 3;
     /// Icons are drawn at least this many pixels tall (the whole-area view is small).
     float min_icon_px = 0;
+    /// Rooms in the game's "selected" palette (the vivid purple the map uses under its cursor)
+    /// instead of the muted standard one.
+    float selected = 1.0f;
 };
 
 /// Straight RGBA8, view.w * view.h * 4 bytes, top row first; opaque (black outside the map).

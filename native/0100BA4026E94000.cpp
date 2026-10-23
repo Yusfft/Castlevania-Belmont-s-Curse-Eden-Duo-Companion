@@ -44,6 +44,7 @@
 #include "bc_live.h"
 #include "bc_mapdraw.h"
 #include "bc_render.h"
+#include "bc_ui.h"
 #include "bc_world.h"
 #include "core/mods/modules/dsmod_module_sdk.h"
 
@@ -54,15 +55,18 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.3.2";
+constexpr const char* kVersion = "0.4.0";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
 constexpr int kCanvasH = 1080;
 constexpr int kWindowW = 2048; // follow-view window image
 constexpr int kWindowH = 1536;
-constexpr int kTitleW = 1000; // area title image
-constexpr int kTitleH = 150;
+constexpr int kTitleW = 640; // level banner image (the banner art is 512 x 275)
+constexpr int kTitleH = 344;
+constexpr int kZoomBarW = bc_ui::ZoomBarLayout::kW, kZoomBarH = bc_ui::ZoomBarLayout::kH;
+constexpr int kButtonW = 170, kButtonH = 56;
+constexpr int kLabelW = 700, kLabelH = 70;
 // Re-centre the window when the player is this far (px) from its centre.
 constexpr double kRecentreX = (kWindowW - kCanvasW) / 2.0 - 90.0;
 constexpr double kRecentreY = (kWindowH - kCanvasH) / 2.0 - 60.0;
@@ -218,6 +222,7 @@ struct Window {
 
 struct Title {
     std::string title, subtitle;
+    bc_shade::Vec4 color{0.22f, 0.35f, 0.26f, 1.0f};
 };
 
 struct Instance {
@@ -671,10 +676,10 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         mem.read = [h](u64 at, void* out, std::size_t n) {
             return dsmod_sdk::ReadGuest<dsmod_sdk::MissingIsMapped::AssumeMapped>(*h, at, out, n);
         };
-        // The exploration dictionary is walked once a second; debug values are published four
-        // times a second.
+        // The exploration dictionary is walked once a second. Debug values are published every
+        // sample: the host clears a value that a sample does not publish.
         const bool with_fog = inst->samples % 60 == 1;
-        const bool debug = inst->samples % 15 == 1;
+        const bool debug = true;
         bc_live::State fresh;
         inst->reader.Sample(mem, with_fog, fresh);
         if (!with_fog && inst->live.fog_ok) {
@@ -807,12 +812,23 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 font = inst->common && !inst->common->font.Empty();
             }
             if (font && !title.empty()) {
-                const u64 id = Fnv(Fnv(0xcbf29ce484222325ULL, title), "|" + subtitle);
+                Title t{title, subtitle};
+                {
+                    std::lock_guard lock(inst->world_mutex);
+                    if (inst->names) {
+                        if (const auto it = inst->names->banner_colors.find(s.world_name);
+                            it != inst->names->banner_colors.end())
+                            t.color = it->second;
+                    }
+                }
+                char col[48];
+                std::snprintf(col, sizeof col, "|%.3f,%.3f,%.3f", t.color.x, t.color.y, t.color.z);
+                const u64 id = Fnv(Fnv(Fnv(0xcbf29ce484222325ULL, title), "|" + subtitle), col);
                 char key[64];
                 std::snprintf(key, sizeof key, "module:bc:title:%llx", static_cast<unsigned long long>(id));
                 {
                     std::lock_guard lock(inst->ex_mutex);
-                    Instance::Remember(inst->titles, id, Title{title, subtitle}, 16);
+                    Instance::Remember(inst->titles, id, t, 16);
                 }
                 PublishT(h, "bc.title.key", key);
                 PublishI(h, "bc.title.img", 1);
@@ -913,6 +929,20 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         } else {
             PublishI(h, "bc.map.pshow", 0);
         }
+        {
+            bool ui_ok;
+            {
+                std::lock_guard lock(inst->world_mutex);
+                ui_ok = inst->common && !inst->common->font.Empty() && !inst->common->ui.empty();
+            }
+            char zk[40];
+            std::snprintf(zk, sizeof zk, "module:bc:ui:zoom:%d", zoom);
+            PublishT(h, "bc.ui.zoom", zk);
+            PublishI(h, "bc.ui.ok", ui_ok);
+            PublishI(h, "bc.ui.plain", !ui_ok);
+            PublishI(h, "bc.ui.wait", ui_ok && !(follow || area));
+            PublishI(h, "bc.ui.waitplain", !ui_ok && !(follow || area));
+        }
         PublishI(h, "bc.map.follow", follow);
         PublishI(h, "bc.map.area", area);
         PublishI(h, "bc.map.ready", follow || area);
@@ -951,7 +981,7 @@ void Configure(void* p, const EdenDsmodHostExtensions* host) {
     inst->codec_cv.notify_all();
 }
 
-EdenDsmodBool OnAction(void* p, const char* action, int64_t) {
+EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
     auto* inst = static_cast<Instance*>(p);
     if (!inst || !action)
         return EDEN_DSMOD_FALSE;
@@ -964,6 +994,8 @@ EdenDsmodBool OnAction(void* p, const char* action, int64_t) {
             inst->zoom = std::min(inst->zoom + 1, kZoomLevels - 1);
         } else if (a == "zoom_out") {
             inst->zoom = std::max(inst->zoom - 1, 0);
+        } else if (a == "zoom_set") {
+            inst->zoom = static_cast<int>(std::clamp<int64_t>(argument, 0, kZoomLevels - 1));
         } else {
             return EDEN_DSMOD_FALSE;
         }
@@ -989,6 +1021,40 @@ bool LoadPlayer(Instance* inst, int size, void* receiver, EdenDsmodImageSink sin
     return true;
 }
 
+bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodImageSink sink) {
+    std::shared_ptr<const bc_levelmap::Common> common;
+    {
+        std::unique_lock lock(inst->world_mutex);
+        inst->world_cv.wait_for(lock, std::chrono::seconds(20), [inst] { return inst->assets_done; });
+        common = inst->common;
+    }
+    if (!common || common->font.Empty())
+        return false;
+    std::vector<u8> px;
+    int w = 0, h = 0;
+    int zoom = 0;
+    if (what == "frame") {
+        w = kCanvasW, h = kCanvasH;
+        px = bc_ui::Frame(*common, w, h);
+    } else if (std::sscanf(what.c_str(), "zoom:%d", &zoom) == 1) {
+        w = kZoomBarW, h = kZoomBarH;
+        px = bc_ui::ZoomBar(*common, zoom, w, h);
+    } else if (what == "btn:debug" || what == "btn:map") {
+        w = kButtonW, h = kButtonH;
+        px = bc_ui::Button(*common, what == "btn:debug" ? "Debug" : "Map", w, h);
+    } else if (what == "wait") {
+        w = kLabelW, h = kLabelH;
+        px = bc_ui::Label(*common, "Waiting for the game", 40, w, h);
+    } else if (what == "debug") {
+        w = kLabelW, h = kLabelH;
+        px = bc_ui::Label(*common, "Debug", 48, w, h);
+    } else {
+        return false;
+    }
+    sink(receiver, static_cast<u32>(w), static_cast<u32>(h), px.data(), px.size());
+    return true;
+}
+
 bool LoadTitle(Instance* inst, u64 id, void* receiver, EdenDsmodImageSink sink) {
     std::optional<Title> t;
     {
@@ -1002,7 +1068,7 @@ bool LoadTitle(Instance* inst, u64 id, void* receiver, EdenDsmodImageSink sink) 
     }
     if (!t || !common || common->font.Empty())
         return false;
-    const auto px = bc_mapdraw::RenderTitle(common->font, t->title, t->subtitle, kTitleW, kTitleH);
+    const auto px = bc_ui::TitleBanner(*common, t->title, t->subtitle, t->color, kTitleW, kTitleH);
     sink(receiver, kTitleW, kTitleH, px.data(), px.size());
     return true;
 }
@@ -1099,6 +1165,8 @@ EdenDsmodBool LoadImage(void* p, const EdenDsmodHostApi*, const char* key, void*
             return LoadPlayer(inst, size, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         }
         unsigned long long id = 0;
+        if (std::strncmp(key, "module:bc:ui:", 13) == 0)
+            return LoadUi(inst, key + 13, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         if (std::sscanf(key, "module:bc:title:%llx", &id) == 1)
             return LoadTitle(inst, id, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         int number = 0, zoom = 0, cx = 0, cy = 0;

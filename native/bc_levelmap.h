@@ -103,6 +103,7 @@ struct Sprite {
     Texture tex;              // the sprite rect, straight alpha
     float width = 0, height = 0; // world units at scale 1 (rect size / pixels per unit)
     float pivot_x = 0.5f, pivot_y = 0.5f;
+    float border[4]{}; // 9-slice border in pixels: left, bottom, right, top
 };
 
 struct Tile {
@@ -207,6 +208,7 @@ struct Font {
 
 struct Common {
     Sprite player;
+    std::map<std::string, Sprite> ui; // map screen frame, banner, buttons, zoom scale
     Font font;
     std::string log;
 };
@@ -226,6 +228,7 @@ private:
 struct Names {
     Strings strings;
     std::unordered_map<std::string, std::string> levels;    // "World_Biome_01_Streets_Poor" -> "Paris Streets"
+    std::unordered_map<std::string, bc_shade::Vec4> banner_colors; // the level's map banner tint (sRGB)
     std::unordered_map<std::string, std::string> districts; // DistrictData name -> display name
 };
 

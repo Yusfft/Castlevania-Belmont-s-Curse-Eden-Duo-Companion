@@ -298,7 +298,8 @@ std::optional<Texture> LoadTexture2D(const File& f, const ObjectInfo& obj, const
             return std::nullopt;
         }
     }
-    auto im = bc_tex::Decode(*fmt, w, h, data.data(), data.size(), shift > 0 ? shift : -1, codecs.astc);
+    // A platform blob means the Switch block-linear layout, also with one GOB per block (shift 0).
+    auto im = bc_tex::Decode(*fmt, w, h, data.data(), data.size(), shift, codecs.astc);
     if (!im) {
         *err = "texture decode failed";
         return std::nullopt;
@@ -416,6 +417,10 @@ std::optional<Sprite> LoadSprite(Assets& assets, const std::shared_ptr<File>& f,
     if (const Value* pv = v->Get("m_Pivot")) {
         s.pivot_x = Flt(pv->Get("x"), 0.5f);
         s.pivot_y = Flt(pv->Get("y"), 0.5f);
+    }
+    if (const Value* b = v->Get("m_Border")) {
+        s.border[0] = Flt(b->Get("x")), s.border[1] = Flt(b->Get("y"));
+        s.border[2] = Flt(b->Get("z")), s.border[3] = Flt(b->Get("w"));
     }
     return s;
 }
@@ -748,8 +753,11 @@ std::shared_ptr<const Names> LoadNames(Assets& assets) {
                 continue;
             if (const auto v = f->sf->ReadObject(o)) {
                 const std::string text = n->strings.Get(key_of(*v, "levelDisplayName"));
+                const std::string world = name.substr(0, name.size() - 10);
                 if (!text.empty())
-                    n->levels[name.substr(0, name.size() - 10)] = text;
+                    n->levels[world] = text;
+                if (const Value* c = v->Get("levelMapBannerColor"))
+                    n->banner_colors[world] = {Flt(c->Get("r")), Flt(c->Get("g")), Flt(c->Get("b")), Flt(c->Get("a"), 1)};
             }
         }
     }
@@ -1330,16 +1338,33 @@ std::shared_ptr<const Common> LoadCommon(Assets& assets, const Codecs& codecs) {
     auto c = std::make_shared<Common>();
     std::string& log = c->log;
     if (const auto ui = assets.Open(assets.Find("ui-gamemenus_assets_all")); ui && ui->sf) {
+        // The player marker and the map screen's own frame, banner, legend box, button frame
+        // and zoom scale.
+        static const char* const kUi[] = {"Map_Background", "Map_InfoParchment", "Map_LegendBox", "cartouche",
+                                          "Map_Scale", "Map_ScaleCursor", "Map_ScaleNavigationZoom",
+                                          "Map_ScaleNavigationDeZoom"};
         for (const auto& o : ui->sf->Objects()) {
-            if (o.class_id != kClassSprite || ui->sf->PeekName(o) != "Map_PlayerIcon")
+            if (o.class_id != kClassSprite)
+                continue;
+            const std::string name = ui->sf->PeekName(o);
+            const bool player = name == "Map_PlayerIcon";
+            bool wanted = player;
+            for (const char* k : kUi)
+                wanted |= name == k;
+            if (!wanted || (!player && c->ui.count(name)))
                 continue;
             std::string err;
-            if (auto s = LoadSprite(assets, ui, o, codecs, &err))
+            auto s = LoadSprite(assets, ui, o, codecs, &err);
+            if (!s) {
+                Log(log, name + ": " + err);
+                continue;
+            }
+            if (player)
                 c->player = std::move(*s);
             else
-                Log(log, "player icon: " + err);
-            break;
+                c->ui[name] = std::move(*s);
         }
+        Log(log, std::to_string(c->ui.size()) + " ui sprites");
     } else {
         Log(log, "ui-gamemenus bundle missing");
     }

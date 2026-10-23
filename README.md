@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.3.2)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.4.0)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -24,10 +24,15 @@ from the player's own romfs and drawn by the native module.
 - **Player marker.** The game's gold star, at the player's exact position every frame. The map
   slides under it; a new section is drawn in the background when needed.
 - **Area title.** The biome and district names in the game's own font (English).
-- **Zoom.** Tap anywhere: close → medium → whole area → close. The whole-area view shows the
-  part of the map the player is in (the main map, a tower, a Z-room).
-- **Debug page.** Hold the area name to open it: every step of the live memory chain and the
-  map loader's log.
+- **Rooms in the map's vivid palette**, the one the game uses under its map cursor.
+- **The game's map-screen interface.** The gold-edged frame of the map screen, the level banner
+  in the level's colour, and the zoom scale with its − / + buttons, all from the game's own art,
+  with text in the game's font.
+- **Zoom.** The − / + buttons, or tap a level's name on the scale (Area, Sub-area, Close). The
+  whole-area view shows the part of the map the player is in (the main map, a tower, a
+  Z-room). The page opens in the close view.
+- **Debug page.** The Debug button (or hold the area name): every step of the live memory chain
+  and the map loader's log.
 
 ## How it works
 
@@ -58,7 +63,8 @@ Readers: `native/bc_unity.*` (bounds-checked UnityFS / SerializedFile / type-tre
 on-demand LZ4 block reads and managed references), `bc_tex.*` (RGBA, Alpha8, BC1/BC3/BC4 and
 the Switch block-linear layout; ASTC through Eden's decoder), `bc_levelmap.*` (the loader).
 Drawing: `bc_shade.h` (the map shading), `bc_fog.h` (fog distance field), `bc_mapdraw.*`
-(tiles, fog, icons, marker, title). The shading and fog maths were checked numerically against
+(tiles, fog, icons, marker), `bc_ui.*` (frame, banner, zoom scale, buttons and text from the
+map screen's own sprites: `Map_Background`, `Map_InfoParchment`, `cartouche`, `Map_Scale*`). The shading and fog maths were checked numerically against
 the game's own shaders. If a biome's level map cannot be read, the room layout from the
 `data-world_biome_*` bundles is drawn instead (`bc_world.*`, `bc_render.*`, the 0.2 renderer).
 

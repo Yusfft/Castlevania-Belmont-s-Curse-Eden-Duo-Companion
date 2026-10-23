@@ -17,7 +17,13 @@ BG = "#FF0C0A10"
 # Player marker sizes per zoom level (the game draws it 5 world units tall; 7 and 14 px per
 # unit in the medium and close views, a fixed size in the whole-area view).
 MARKER = {"bc.mk.z0": 30, "bc.mk.z1": 35, "bc.mk.z2": 70}
-TITLE_W, TITLE_H = 1000, 150  # must match kTitleW / kTitleH in 0100BA4026E94000.cpp
+TITLE_W, TITLE_H = 640, 344  # must match kTitleW / kTitleH in 0100BA4026E94000.cpp
+ZOOM_W, ZOOM_H = 640, 130     # bc_ui::ZoomBarLayout
+ZOOM_X, ZOOM_Y = (W - ZOOM_W) // 2, H - ZOOM_H - 30
+ZOOM_TICKS = [130, 320, 510]  # ZoomBarLayout::Tick(0..2)
+ZOOM_BAR_Y = 44
+BTN_W, BTN_H = 170, 56        # kButtonW / kButtonH
+LABEL_W, LABEL_H = 700, 70    # kLabelW / kLabelH
 
 
 def label(rect, text=None, bind_text=None, scale=4, color=TEXT, **kw):
@@ -53,6 +59,10 @@ def marker(bind, size):
             "need_bind": bind}
 
 
+def tap(r, action):
+    return rect(r, "#00000000", on_tap=action)
+
+
 map_page = {
     "id": "map",
     "title": "Map",
@@ -68,18 +78,35 @@ map_page = {
          "need_bind": "bc.map.area"},
         # The game's player marker, centred; it only moves in the whole-area view.
         *[marker(b, sz) for b, sz in MARKER.items()],
+        # The map screen's gold-edged frame (game art, drawn by the module).
+        {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:frame", "need_bind": "bc.ui.ok"},
+        {"type": "image", "rect": [(W - LABEL_W) // 2, 505, LABEL_W, LABEL_H], "src": "module:bc:ui:wait",
+         "need_bind": "bc.ui.wait"},
         # Placed by hand (20 glyphs of 16 px): a centred label opens shifted on some hosts.
         label([W // 2 - 160, 520, 360, 40], text="WAITING FOR THE GAME", scale=4, color=DIM,
-              need_bind="!bc.map.ready"),
-        # A tap anywhere changes the zoom.
-        rect([0, 0, W, H], "#00000000", on_tap="act_zoom"),
-        # Area and district names in the game's font (a plain label until the font is read).
-        {"type": "image", "rect": [24, 14, TITLE_W, TITLE_H], "src_bind": "bc.title.key",
+              need_bind="bc.ui.waitplain"),
+        # Level banner with the area and district names (a plain label until the art is read).
+        {"type": "image", "rect": [14, 10, TITLE_W, TITLE_H], "src_bind": "bc.title.key",
          "need_bind": "bc.title.img"},
         label([36, 30, 900, 40], bind_text="bc.title", scale=5, color=GOLD,
               need_bind="!bc.title.img"),
-        # Hold the title to open the debug page.
-        label([24, 14, 640, 110], text=" ", scale=5, color=GOLD, on_hold="act_debug", hold_ms=900),
+        # Zoom scale: - and + buttons, or tap a level's name.
+        {"type": "image", "rect": [ZOOM_X, ZOOM_Y, ZOOM_W, ZOOM_H], "src_bind": "bc.ui.zoom",
+         "need_bind": "bc.ui.ok"},
+        tap([ZOOM_X - 10, ZOOM_Y + ZOOM_BAR_Y - 52, 104, 104], "act_zoom_out"),
+        tap([ZOOM_X + ZOOM_W - 94, ZOOM_Y + ZOOM_BAR_Y - 52, 104, 104], "act_zoom_in"),
+        *[tap([ZOOM_X + t - 60, ZOOM_Y + ZOOM_BAR_Y + 20, 120, 64], "act_zoom%d" % z)
+          for z, t in enumerate(ZOOM_TICKS)],
+        # Debug page.
+        {"type": "image", "rect": [W - BTN_W - 40, H - BTN_H - 34, BTN_W, BTN_H], "src": "module:bc:ui:btn:debug",
+         "need_bind": "bc.ui.ok"},
+        tap([W - BTN_W - 40, H - BTN_H - 34, BTN_W, BTN_H], "act_debug"),
+        # Without the game's art: plain buttons.
+        button(40, "-", "act_zoom_out", y=H - 90, w=120, h=70) | {"need_bind": "bc.ui.plain"},
+        button(180, "+", "act_zoom_in", y=H - 90, w=120, h=70) | {"need_bind": "bc.ui.plain"},
+        button(W - 260, "DEBUG", "act_debug", y=H - 90, w=220, h=70) | {"need_bind": "bc.ui.plain"},
+        # Holding the title also opens the debug page.
+        label([24, 14, 560, 110], text=" ", scale=5, color=GOLD, on_hold="act_debug", hold_ms=900),
     ],
 }
 
@@ -115,7 +142,8 @@ rows = [
 
 debug_widgets = [
     rect([0, 0, W, 72], BAR),
-    label([24, 20, 800, 40], text="DEBUG", scale=6, color=GOLD),
+    {"type": "image", "rect": [(W - LABEL_W) // 2, 2, LABEL_W, LABEL_H], "src": "module:bc:ui:debug", "need_bind": "bc.ui.ok"},
+    label([24, 20, 800, 40], text="DEBUG", scale=6, color=GOLD, need_bind="bc.ui.plain"),
 ]
 y = 84
 ROW = 29
@@ -132,7 +160,12 @@ for row in rows:
             debug_widgets.append(value([420 + i * 200, y, 190, ROW], b, scale=3))
         y += ROW
 assert y < 984, y
-debug_widgets += [rect([0, 984, W, 96], BAR), button(14, "MAP", "act_map", w=300)]
+debug_widgets += [
+    rect([0, 984, W, 96], BAR),
+    {"type": "image", "rect": [24, 1004, BTN_W, BTN_H], "src": "module:bc:ui:btn:map", "need_bind": "bc.ui.ok"},
+    tap([24, 1004, BTN_W, BTN_H], "act_map") | {"need_bind": "bc.ui.ok"},
+    button(14, "MAP", "act_map", w=300) | {"need_bind": "bc.ui.plain"},
+]
 
 manifest = {
     "format": 1,
@@ -150,6 +183,11 @@ manifest = {
     "haptics": {"enabled": True, "respect_system": True, "tap": "light", "refused": "off"},
     "actions": {
         "act_zoom": {"kind": "module", "action": "zoom", "argument": 0},
+        "act_zoom_in": {"kind": "module", "action": "zoom_in", "argument": 0},
+        "act_zoom_out": {"kind": "module", "action": "zoom_out", "argument": 0},
+        "act_zoom0": {"kind": "module", "action": "zoom_set", "argument": 0},
+        "act_zoom1": {"kind": "module", "action": "zoom_set", "argument": 1},
+        "act_zoom2": {"kind": "module", "action": "zoom_set", "argument": 2},
         "act_debug": {"kind": "page", "page": "debug", "transition": "fade", "duration_ms": 150},
         "act_map": {"kind": "page", "page": "map", "transition": "fade", "duration_ms": 150},
     },

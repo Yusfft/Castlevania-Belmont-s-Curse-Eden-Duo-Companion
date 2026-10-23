@@ -294,6 +294,12 @@ int main(int argc, char** argv) {
                 static_cast<long long>(sim.ints["bc.title.img"]));
     save(sim.texts["bc.title.key"], "sim_title");
     save("module:bc:player:70", "sim_player70");
+    for (const char* k : {"frame", "zoom:0", "zoom:2", "btn:debug", "btn:map", "wait", "debug"})
+        save(std::string("module:bc:ui:") + k, std::string("sim_ui_") + (k[0] == 'z' ? "zoom" + std::string(k + 5) : k[0] == 'b' ? std::string(k + 4) : std::string(k)));
+    std::printf("zoom_set 1 accepted: %u\n", ext->on_action(inst, "zoom_set", 1));
+    sample_n(2);
+    std::printf("ui zoom key %s ok %lld\n", sim.texts["bc.ui.zoom"].c_str(), static_cast<long long>(sim.ints["bc.ui.ok"]));
+    ext->on_action(inst, "zoom_set", 0);
     // Into the main map, near (40, 40): close view.
     ext->on_action(inst, "zoom", 0); // area -> close
     sim.guest.Put<float>(sim.guest.explorer_ + 0x90, 40.0f);

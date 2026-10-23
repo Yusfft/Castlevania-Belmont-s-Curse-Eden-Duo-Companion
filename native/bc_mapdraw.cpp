@@ -483,6 +483,7 @@ std::vector<std::uint8_t> Render(const LevelMap& map, const Reveal& reveal, cons
             pix.wx = static_cast<float>(wx);
             pix.wy = static_cast<float>(wy);
             pix.fog = d * 0.1f; // the game's fog pass stores distance / 10
+            pix.selected = opt.selected;
             const Vec4 c = bc_shade::Shade(P, tex, pix, lim);
             const float a = std::clamp(c.w, 0.0f, 1.0f);
             float* o = &row[static_cast<std::size_t>(px) * 3];
