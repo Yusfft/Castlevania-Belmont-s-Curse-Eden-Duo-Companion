@@ -54,7 +54,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.3.0";
+constexpr const char* kVersion = "0.3.1";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -72,7 +72,10 @@ constexpr int kZoomLevels = 3;
 // The player marker: the game draws Map_PlayerIcon 5 units tall (the page sizes it per zoom
 // level), 0.7 units above the player.
 constexpr double kPlayerLift = 0.7;
-constexpr int kRenderThreads = 3;
+// Map drawing runs beside the emulator: few threads, low priority, and a new window at most
+// every kRedrawSeconds for exploration changes alone.
+constexpr int kRenderThreads = 2;
+constexpr double kRedrawSeconds = 6.0;
 
 constexpr const char* kCatalog = "Data/StreamingAssets/aa/catalog.json";
 
@@ -266,6 +269,7 @@ struct Instance {
     std::shared_ptr<const bc_mapdraw::Exploration> exploration;
     std::shared_ptr<const bc_render::Fog> fog;
     Window cur, prev;
+    std::chrono::steady_clock::time_point last_window{};
     double cost_us = 0;
 
     ~Instance() {
@@ -329,6 +333,7 @@ struct Instance {
                     codec_cv.wait_for(lock, std::chrono::seconds(10), [this] { return configured || stopping; });
                 }
                 auto c = bc_levelmap::LoadCommon(*a, Codecs());
+                a->Trim();
                 log += c->log;
                 std::lock_guard lock(world_mutex);
                 assets = a;
@@ -398,6 +403,8 @@ struct Instance {
             try {
                 if (a && n)
                     m = bc_levelmap::LoadLevelMap(*a, Codecs(), *n, want, &load_log);
+                if (a)
+                    a->Trim(); // the map keeps what it needs; drop the bundle caches
                 else
                     err = "(assets missing)";
             } catch (...) {
@@ -411,7 +418,7 @@ struct Instance {
                 if (m) {
                     lm_log = m->log;
                     lm_cache.emplace_back(want, m);
-                    while (lm_cache.size() > 2)
+                    while (lm_cache.size() > 1) // one biome in memory
                         lm_cache.pop_front();
                 } else {
                     lm_log = "level map " + want + " failed " + err + "\n" + load_log;
@@ -584,9 +591,10 @@ std::shared_ptr<bc_render::Fog> BuildFog(const bc_live::State& s, const bc_world
     return f;
 }
 
-u64 ExploreId(const bc_live::State& s, bool world_ready) {
+u64 ExploreId(const bc_live::State& s, bool world_ready, bool legacy) {
+    // The level map changes only with zones (not with chunk states); the fallback map needs both.
     if (s.fog_ok && s.fog_entries > 0)
-        return s.fog_hash ^ (s.fog_matched > 0 ? 0 : 0x5A5A);
+        return legacy ? s.fog_hash ^ (s.fog_matched > 0 ? 0 : 0x5A5A) : s.explore_hash;
     return 0x5EED000000000000ULL ^ (world_ready ? 1ULL << 40 : 0) ^ static_cast<u64>(static_cast<u32>(s.room_uid));
 }
 
@@ -661,8 +669,10 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         mem.read = [h](u64 at, void* out, std::size_t n) {
             return dsmod_sdk::ReadGuest<dsmod_sdk::MissingIsMapped::AssumeMapped>(*h, at, out, n);
         };
-        // The exploration dictionary is walked twice a second.
-        const bool with_fog = inst->samples % 30 == 1;
+        // The exploration dictionary is walked once a second; debug values are published four
+        // times a second.
+        const bool with_fog = inst->samples % 60 == 1;
+        const bool debug = inst->samples % 15 == 1;
         bc_live::State fresh;
         inst->reader.Sample(mem, with_fog, fresh);
         if (!with_fog && inst->live.fog_ok) {
@@ -671,6 +681,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             fresh.fog_matched = inst->live.fog_matched;
             fresh.fog = std::move(inst->live.fog);
             fresh.fog_hash = inst->live.fog_hash;
+            fresh.explore_hash = inst->live.explore_hash;
         }
         if (!with_fog)
             fresh.last_save_room = inst->live.last_save_room.empty() ? fresh.last_save_room : inst->live.last_save_room;
@@ -678,7 +689,12 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         const bc_live::State& s = inst->live;
         const auto world = inst->World();
         const bool world_ready = world && !world->biomes.empty();
-        if (const u64 id = ExploreId(s, world_ready); id != inst->explore_id || !inst->exploration) {
+        bool legacy_mode;
+        {
+            std::lock_guard lock(inst->lm_mutex);
+            legacy_mode = inst->lm_failed.count(s.world_name) != 0;
+        }
+        if (const u64 id = ExploreId(s, world_ready, legacy_mode); id != inst->explore_id || !inst->exploration) {
             inst->explore_id = id;
             inst->exploration = BuildExploration(s);
             inst->fog = BuildFog(s, world.get());
@@ -686,8 +702,9 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             Instance::Remember(inst->explorations, id, inst->exploration, 8);
             Instance::Remember(inst->fogs, id, inst->fog, 8);
         }
-        PublishDebug(h, s);
-        {
+        if (debug)
+            PublishDebug(h, s);
+        if (debug) {
             std::lock_guard lock(inst->world_mutex);
             PublishT(h, "bc.world.log", inst->world_log);
             PublishI(h, "bc.world.done", inst->world_done);
@@ -712,7 +729,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 lm = inst->LevelMap(s.world_name, &lm_state);
         }
         PublishI(h, "bc.lm.state", lm_state);
-        {
+        if (debug) {
             std::lock_guard lock(inst->lm_mutex);
             PublishT(h, "bc.lm.log", inst->lm_log);
             PublishI(h, "bc.lm.ms", static_cast<s64>(inst->lm_ms));
@@ -799,7 +816,12 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 const bool same_view = cur.valid && cur.biome == number && cur.zoom == zoom && cur.legacy == !lm;
                 const bool far = same_view && (std::fabs(pwx - cur.cx) * scale > kRecentreX ||
                                                std::fabs(pwy - cur.cy) * scale > kRecentreY);
-                if (!same_view || far || cur.explore != inst->explore_id) {
+                const auto now = std::chrono::steady_clock::now();
+                const bool redraw_due =
+                    cur.explore != inst->explore_id &&
+                    std::chrono::duration<double>(now - inst->last_window).count() >= kRedrawSeconds;
+                if (!same_view || far || redraw_due) {
+                    inst->last_window = now;
                     // Keep the old window underneath while the new one loads.
                     inst->prev = same_view ? cur : Window{};
                     cur.valid = true;

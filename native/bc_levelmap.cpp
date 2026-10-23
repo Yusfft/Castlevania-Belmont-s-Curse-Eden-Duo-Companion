@@ -162,6 +162,12 @@ bool IsMainNode(const bc_unity::BundleNode& n) {
 
 } // namespace
 
+void Assets::Trim() {
+    std::lock_guard lock(mu_);
+    by_bundle_.clear();
+    by_cab_.clear();
+}
+
 std::shared_ptr<File> Assets::Open(const std::string& bundle_name) {
     if (bundle_name.empty())
         return nullptr;

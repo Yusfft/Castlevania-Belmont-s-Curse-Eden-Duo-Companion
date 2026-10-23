@@ -12,10 +12,20 @@ jobs:
     env:
       BUILD_ID: 0F1169AA7D0FA4529C861F96ADEC306E00000000000000000000000000000000
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Version
-        run: echo "VERSION=$(tr -d '[:space:]' < package/VERSION)" >> "$GITHUB_ENV"
+        # package/VERSION and the module's kVersion must agree; a repository holding a mix of
+        # old and new files (an incomplete upload) fails here instead of building the old map.
+        run: |
+          VERSION=$(tr -d '[:space:]' < package/VERSION)
+          MODULE=$(sed -n 's/.*kVersion = "\([^"]*\)".*/\1/p' native/0100BA4026E94000.cpp)
+          echo "package/VERSION: $VERSION, module: $MODULE"
+          if [ "$VERSION" != "$MODULE" ]; then
+            echo "::error::package/VERSION ($VERSION) and native/0100BA4026E94000.cpp ($MODULE) differ: the repository holds a mix of old and new files"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Android NDK
         run: |
@@ -58,7 +68,7 @@ jobs:
             --module linux-x86_64=build-linux/0100BA4026E94000.so
           unzip -l dist/0100BA4026E94000.dsmod.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: BelmontsCurseMap-${{ env.VERSION }}
           path: dist/0100BA4026E94000.dsmod.zip

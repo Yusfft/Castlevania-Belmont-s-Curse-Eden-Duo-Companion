@@ -497,7 +497,7 @@ bool LazyBundle::Read(std::uint64_t offset, std::size_t size, std::uint8_t* out)
             data = fresh;
             std::lock_guard lock(mu_);
             cache_.insert(cache_.begin(), {i, data});
-            if (cache_.size() > 6)
+            if (cache_.size() > 8)
                 cache_.pop_back();
         }
         const u64 from = pos - bl.uoff;

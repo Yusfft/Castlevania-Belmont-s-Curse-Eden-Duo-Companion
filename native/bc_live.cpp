@@ -437,6 +437,7 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
                     }
                 }
                 u64 hash = 0xcbf29ce484222325ULL;
+                u64 ehash = 0xcbf29ce484222325ULL;
                 bool ok = true;
                 for (s32 i = 0; i < count && ok; ++i) {
                     const u64 e = entries + kArrayData + kDictEntryStride * static_cast<u64>(i);
@@ -488,21 +489,28 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
                     }
                     hash = Fnv(hash, fr.key.data(), fr.key.size());
                     hash = Fnv(hash, fr.states.data(), fr.states.size());
+                    ehash = Fnv(ehash, fr.key.data(), fr.key.size() + 1);
                     for (const auto* ids : {&fr.entered_zones, &fr.entered_zdoors, &fr.discovered_zdoor_zones,
                                             &fr.discovered_secrets}) {
                         const u32 n32 = static_cast<u32>(ids->size());
                         hash = Fnv(hash, &n32, 4);
                         hash = Fnv(hash, ids->data(), ids->size() * 4);
+                        ehash = Fnv(ehash, &n32, 4);
+                        ehash = Fnv(ehash, ids->data(), ids->size() * 4);
                     }
-                    for (const auto& a : fr.activated)
+                    for (const auto& a : fr.activated) {
                         hash = Fnv(hash, a.data(), a.size() + 1);
+                        ehash = Fnv(ehash, a.data(), a.size() + 1);
+                    }
                     out.fog.push_back(std::move(fr));
                 }
                 if (ok) {
                     hash = Fnv(hash, out.last_save_room.data(), out.last_save_room.size());
+                    ehash = Fnv(ehash, out.last_save_room.data(), out.last_save_room.size());
                     out.fog_ok = true;
                     out.fog_entries = count;
                     out.fog_hash = hash;
+                    out.explore_hash = ehash;
                 } else {
                     out.fog.clear();
                     out.fog_matched = 0;

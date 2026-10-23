@@ -72,6 +72,8 @@ public:
     /// The first bundle name starting with `prefix`, or "".
     std::string Find(std::string_view prefix) const;
     std::vector<std::string> FindAll(std::string_view prefix) const;
+    /// Closes every opened file (their block caches and metadata); they reopen on demand.
+    void Trim();
 
     /// Resolves a PPtr {FileID, PathID} seen in `from`.
     struct Ref {

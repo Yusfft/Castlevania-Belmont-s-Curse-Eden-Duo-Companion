@@ -85,6 +85,9 @@ struct State {
     std::int32_t fog_entries = 0, fog_matched = 0;
     std::vector<FogRoom> fog;
     std::uint64_t fog_hash = 0;
+    // The same without the chunk states: changes only when a zone, Z-door, secret, activated
+    // element or the last save room changes (what the level map shows).
+    std::uint64_t explore_hash = 0;
 };
 
 class Reader {

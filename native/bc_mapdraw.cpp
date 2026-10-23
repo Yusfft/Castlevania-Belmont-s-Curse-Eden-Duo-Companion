@@ -146,7 +146,7 @@ struct MapTextures {
 void LowerPriority() {
 #if defined(__linux__) || defined(__ANDROID__)
     // Map drawing must not compete with the emulator: run it at a low priority.
-    setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
+    setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 19);
 #endif
 }
 
