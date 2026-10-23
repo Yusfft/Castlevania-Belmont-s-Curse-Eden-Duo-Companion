@@ -1,44 +1,48 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Castlevania: Belmont's Curse (0100BA4026E94000), game version 1.1.0, build 0F1169AA7D0FA452.
-// Eden Duo second-screen map companion, first test version.
+// Eden Duo second-screen map companion.
 //
-//   * Map: the castle's rooms are read at runtime from the player's own romfs (bc_world) and
-//     drawn by the module (bc_render) as `module:bc:map:...` images. Nothing from the game is
-//     shipped in the package.
-//   * Live: the current room, chunk and chunk exploration are read from guest memory (bc_live)
-//     and published as plain values; the debug page shows every step so the chain can be
-//     checked on a device.
+//   * Map: the game's own level map, read at runtime from the player's romfs (bc_levelmap) and
+//     drawn by the module (bc_mapdraw) as `module:bc:...` images: the map tiles with the game's
+//     map material, the fog of war from the exploration zones the player entered, the map icons,
+//     the player marker and the area title in the game's font. Nothing from the game is shipped
+//     in the package. If a biome's level map cannot be read, the room layout (bc_world) is drawn
+//     instead (bc_render, the 0.2 renderer).
+//   * Live: room, exploration and the player's world position are read from guest memory
+//     (bc_live). The position is ExplorerComponent.lastMainMapPosition, which
+//     ExplorationSystem.TryUpdateMainMapPosition sets to the player's transform position every
+//     frame (except where the game itself freezes the map position).
 //
-// Outputs (all published every sample):
-//   bc.ver, bc.stage, bc.status, bc.delta, bc.sf, bc.nsys, bc.systems
-//   bc.chunk.x/y, bc.prev.x/y, bc.chunk.mode (1 room-local, 2 world, 0 unknown)
-//   bc.room.ok, bc.room.uid, bc.room.x/y, bc.room.world, bc.room.id, bc.room.inst, bc.ex.uid
-//   bc.mm.x/y/z (ExplorerComponent.lastMainMapPosition, x100)
-//   bc.fog.ok, bc.fog.n, bc.fog.matched, bc.fog.cur, bc.fog.keys
-//   bc.world.ready, bc.world.rooms, bc.world.biomes, bc.world.log
-//   bc.map.key, bc.map.ready, bc.biome.label, bc.zoom, bc.unexp, bc.follow
-//   bc.mk.show, bc.mk.x, bc.mk.y (marker widget offsets, canvas px)
-//   bc.us (average sample cost in microseconds)
+// Follow view: the module renders a 2048 x 1536 window of the map around the player and the
+// page slides it under a fixed marker, so the map follows the player smoothly; a new window is
+// rendered only when the player nears its edge or explores something new. The previous window
+// stays drawn underneath until the new one arrives, so there is no blank frame.
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "bc_levelmap.h"
 #include "bc_live.h"
+#include "bc_mapdraw.h"
 #include "bc_render.h"
 #include "bc_world.h"
 #include "core/mods/modules/dsmod_module_sdk.h"
@@ -50,12 +54,25 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.1.0";
+constexpr const char* kVersion = "0.3.0";
 
-// Map image size; manifest.json places it at (0, 96) on the 1240 x 1080 canvas.
-constexpr int kMapW = 1240;
-constexpr int kMapH = 888;
-constexpr int kMarkerHalf = 16;
+// Canvas and images (must match manifest.json).
+constexpr int kCanvasW = 1240;
+constexpr int kCanvasH = 1080;
+constexpr int kWindowW = 2048; // follow-view window image
+constexpr int kWindowH = 1536;
+constexpr int kTitleW = 1000; // area title image
+constexpr int kTitleH = 150;
+// Re-centre the window when the player is this far (px) from its centre.
+constexpr double kRecentreX = (kWindowW - kCanvasW) / 2.0 - 90.0;
+constexpr double kRecentreY = (kWindowH - kCanvasH) / 2.0 - 60.0;
+// Pixels per world unit at each zoom level (0 = the whole area).
+constexpr double kZoomScale[] = {0.0, 7.0, 14.0};
+constexpr int kZoomLevels = 3;
+// The player marker: the game draws Map_PlayerIcon 5 units tall (the page sizes it per zoom
+// level), 0.7 units above the player.
+constexpr double kPlayerLift = 0.7;
+constexpr int kRenderThreads = 3;
 
 constexpr const char* kCatalog = "Data/StreamingAssets/aa/catalog.json";
 
@@ -73,81 +90,336 @@ std::optional<std::vector<u8>> ReadRomfs(const EdenDsmodHostApi& host, const std
     return std::nullopt;
 }
 
-std::string BiomeLabel(const std::string& world_name) {
+u64 Fnv(u64 h, std::string_view s) {
+    for (const char c : s)
+        h = (h ^ static_cast<u8>(c)) * 0x100000001b3ULL;
+    return h;
+}
+
+/// "World_Biome_01_Streets_Poor" -> "STREETS POOR" (used when the game's names are missing).
+std::string BiomeTitle(const std::string& world_name) {
     std::string s = world_name;
     const std::string prefix = "World_Biome_";
     if (s.rfind(prefix, 0) == 0)
         s = s.substr(prefix.size());
-    for (char& c : s) {
-        if (c == '_')
-            c = ' ';
+    if (s.size() > 3 && std::isdigit(static_cast<unsigned char>(s[0])) &&
+        std::isdigit(static_cast<unsigned char>(s[1])) && s[2] == '_')
+        s = s.substr(3);
+    std::string out;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (c == '_') {
+            out += ' ';
+        } else {
+            if (i > 0 && std::isupper(static_cast<unsigned char>(c)) &&
+                std::islower(static_cast<unsigned char>(s[i - 1])))
+                out += ' ';
+            out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        }
     }
-    return s;
+    return out;
 }
+
+/// Bundles the level maps read (build 1.1.0). Names only: the files are the player's own.
+const std::vector<std::string>& PinnedBundles() {
+    static const std::vector<std::string> names = {
+        "maps_scenes_01_streets_poor_map_1_d8baa1dae0a4b34f7e696a7a9212e535.bundle",
+        "maps_scenes_02_innocentscemetery_map_1_f2e15edf86f4eea7221f0c454c807c8b.bundle",
+        "maps_scenes_03_catacombs_map_1_1f83de3ad066abba844f00912fba8449.bundle",
+        "maps_scenes_05_notredame_map_1_26f32a40ec5b6d6ac411f1b3985e888b.bundle",
+        "maps_scenes_06_mainhall_map_1_7f54316e1cd9f5888f2bf10fc6978f5c.bundle",
+        "maps_scenes_08_library_map_1_70a8d7cd2968bb78ee887718a7218274.bundle",
+        "maps_scenes_09_clocktower_map_1_2595940dda28ec47f1485f144dca168c.bundle",
+        "maps_scenes_10_hallofmirrors_map_1_87e5922a2567cac81ef3f12e18a9d2c1.bundle",
+        "maps_scenes_11_masterquarter_map_1_8d214ab1358b12c885e6d2dcd4a97a5e.bundle",
+        "maps_scenes_12_mqbadending_map_1_61d3334591f067ba587cc2fe9e198ef6.bundle",
+        "art-01_streetspoor_assets_all_e33a704a7ea92e47f2c375f443aacbf1.bundle",
+        "art-03_catacombs_assets_all_c055e263f91c9094b04a632b5581848d.bundle",
+        "art-05_notredame_assets_all_32ef2b2c715639c5d7e41d803bcb27d1.bundle",
+        "art-06_mainhall_assets_all_b8a50ac1737b72382cb0ac62e70bd487.bundle",
+        "art-08_library_assets_all_a76b87cc6d1ea3d322f22efc30e0245d.bundle",
+        "art-09_clocktower_assets_all_d6bb5abd4c1941cd19cf0e43295e974a.bundle",
+        "art-10_hallofmirrors_assets_all_2ee69f349e25b9ac35c3a3220e8b9130.bundle",
+        "art-11_masterquarter_assets_all_52b72c61e319c95a97603f4c975125ff.bundle",
+        "ui-gamemenus_assets_all_866519f7d6a7057a8ba1c459a5b3f694.bundle",
+        "ui-fasttravel_assets_all_89e0a49633a82026de7339a2815e7425.bundle",
+        "ui-commonsingame_assets_all_acb23e9b0608a368aad72d2fe488a679.bundle",
+        "ui-commonsalltime_assets_all_cbf3732ca9bb007ffe39c0428d68b4e2.bundle",
+        "ui-acquisitions_assets_all_401d7a70bb44d71476736dbebe99e9c7.bundle",
+        "fonts-latin_assets_all_304d9e1f03b4a2a6d44b17c96032676a.bundle",
+        "leveldata_assets_all_940f672e456a1dd57099d3d5c994fbc7.bundle",
+        "localization-string-tables-english(en)_assets_all_aa06f0f9074c49a1bdd9e6b274bdec25.bundle",
+        "district-districtdata_bosszdoor_assets_all_efd62a1f286ba654c232c9da8083666b.bundle",
+        "district-districtdata_catacombs-savablescriptableobject_assets_all_2c5599631df37e00b8a1c0d6e6109564.bundle",
+        "district-districtdata_catacombs_assets_all_f8b2592e639239a7e849b0b650ef23bf.bundle",
+        "district-districtdata_clocktower-savablescriptableobject_assets_all_3eac144db0bb2f9d6648cad1ffe65d0a.bundle",
+        "district-districtdata_clocktower_assets_all_36008c50d01783c19caea477abbf1e42.bundle",
+        "district-districtdata_hallofmirrors-savablescriptableobject_assets_all_63d8aaf5423ffd98918b0656f8210244.bundle",
+        "district-districtdata_hallofmirrors_assets_all_16d663d40c049744135ff8726d3cee67.bundle",
+        "district-districtdata_innocentscemetery-savablescriptableobject_assets_all_ba3ca8f9cf13bff5255ec8c087c84500.bundle",
+        "district-districtdata_innocentscemetery_assets_all_75ae6dfb49977b4f36851aef40d2a1f6.bundle",
+        "district-districtdata_library-savablescriptableobject_assets_all_9941cb47832135d5007815c99dbb233e.bundle",
+        "district-districtdata_library_assets_all_eba90c828280a188e9b40cf8c5750a87.bundle",
+        "district-districtdata_mainhall-savablescriptableobject_assets_all_21a44dc94ab1725d1fb79bad78406d32.bundle",
+        "district-districtdata_mainhall_assets_all_508e07bff978f5721f37b4330ea27c8c.bundle",
+        "district-districtdata_masterquarter-savablescriptableobject_assets_all_bf7724d3a77f668df950f66935bc6663.bundle",
+        "district-districtdata_masterquarter_assets_all_150dec9f967c9fec7148ce6522ed5710.bundle",
+        "district-districtdata_millersbridge-savablescriptableobject_assets_all_88b1327ac5fc93eb9ff1b4ea85025bb9.bundle",
+        "district-districtdata_millersbridge_assets_all_f8730e8095cc97244e22ad10ee0c4ba3.bundle",
+        "district-districtdata_mqbadending-savablescriptableobject_assets_all_326541aef871fe71f5f46a6fb8c9fb43.bundle",
+        "district-districtdata_mqbadending_assets_all_36a3a6a7c75bfe00b969b2fe7cbcc9ac.bundle",
+        "district-districtdata_notredame-savablescriptableobject_assets_all_55764b0987a98f6a32eccd39798ecd2a.bundle",
+        "district-districtdata_notredame_assets_all_d95542ff2638c9df7f45627444627b91.bundle",
+        "district-districtdata_streets-savablescriptableobject_assets_all_a7360e4b14d252869ffd592c17efe004.bundle",
+        "district-districtdata_streets_assets_all_a67fbddd6cfbd9d4b54812a06cb661e6.bundle",
+        "district-districtdata_streetsrich-savablescriptableobject_assets_all_0ae6fcf3b8f9fba4f6e203f24dabda7f.bundle",
+        "district-districtdata_streetsrich_assets_all_e227455247b19c1d811c9e13a0bfbebd.bundle",
+    };
+    return names;
+}
+
+/// Every "*.bundle" name in an Addressables catalog.
+std::vector<std::string> BundlesFromCatalog(std::string_view text) {
+    std::vector<std::string> out;
+    std::set<std::string> seen;
+    constexpr std::string_view kSuffix = ".bundle";
+    std::size_t at = 0;
+    while ((at = text.find(kSuffix, at)) != std::string_view::npos) {
+        std::size_t start = at;
+        while (start > 0 && at - start < 240) {
+            const char c = text[start - 1];
+            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == '.' || c == '(' ||
+                  c == ')'))
+                break;
+            --start;
+        }
+        const std::string name(text.substr(start, at + kSuffix.size() - start));
+        if (name.size() > kSuffix.size() && seen.insert(name).second)
+            out.push_back(name);
+        at += kSuffix.size();
+    }
+    return out;
+}
+
+// ---- what the page shows
+
+struct Window {
+    bool valid = false;
+    bool legacy = false; // drawn by bc_render (the level map could not be read)
+    int biome = -1;      // biome number
+    int zoom = -1;
+    int cx = 0, cy = 0;  // window centre, world units
+    u64 explore = 0;
+    std::string key;
+};
+
+struct Title {
+    std::string title, subtitle;
+};
 
 struct Instance {
     EdenDsmodHostApi host{};
 
-    // World model, built once on a background thread.
+    // Host ASTC decoder (base extensions); level maps wait for configure().
+    std::mutex codec_mutex;
+    std::condition_variable codec_cv;
+    bool configured = false;
+    EdenDsmodAstcDecoder astc = nullptr;
+    void* astc_user = nullptr;
+
+    // Loader thread: room layout, assets, names, common art.
     std::mutex world_mutex;
     std::condition_variable world_cv;
     std::shared_ptr<const bc_world::World> world;
     std::string world_log;
-    bool world_done = false;
-    std::thread loader;
+    bool world_done = false;  // room layout read (or failed)
+    bool assets_done = false; // level map assets, names and font read (or failed)
+    std::thread loader, lm_thread;
+    std::atomic<bool> stopping{false};
 
-    // Fog snapshots referenced by published image keys (load_image runs on the asset worker).
-    std::mutex fog_mutex;
+    std::shared_ptr<bc_levelmap::Assets> assets;
+    std::shared_ptr<const bc_levelmap::Names> names;
+    std::shared_ptr<const bc_levelmap::Common> common;
+
+    // Level maps, loaded on request by the loader thread (two kept).
+    std::mutex lm_mutex;
+    std::condition_variable lm_cv;
+    std::string lm_request;
+    std::deque<std::pair<std::string, std::shared_ptr<const bc_levelmap::LevelMap>>> lm_cache;
+    std::set<std::string> lm_failed;
+    std::string lm_log;
+    double lm_ms = 0;
+
+    // Exploration snapshots by id (renders ask for them by the id in the image key).
+    std::mutex ex_mutex;
+    std::deque<std::pair<u64, std::shared_ptr<const bc_mapdraw::Exploration>>> explorations;
     std::deque<std::pair<u64, std::shared_ptr<const bc_render::Fog>>> fogs;
+    std::deque<std::pair<u64, Title>> titles;
+    std::atomic<int> last_render_ms{0};
 
     // Tick-thread state.
     bc_live::Reader reader;
     bc_live::State live;
     u64 samples = 0;
-    int zoom = 0;
-    bool show_unexplored = false;
-    int manual_biome = -1; // >= 0: browsing a biome by hand instead of following the player
-    std::shared_ptr<const bc_render::Fog> fog = std::make_shared<bc_render::Fog>();
-    u64 fog_id = 0;
+    int zoom = 2;
+    u64 explore_id = 1; // never a real id: the first sample builds the snapshot
+    std::shared_ptr<const bc_mapdraw::Exploration> exploration;
+    std::shared_ptr<const bc_render::Fog> fog;
+    Window cur, prev;
     double cost_us = 0;
 
+    ~Instance() {
+        stopping = true;
+        lm_cv.notify_all();
+        codec_cv.notify_all();
+        if (loader.joinable())
+            loader.join();
+        lm_cv.notify_all();
+        if (lm_thread.joinable())
+            lm_thread.join();
+    }
+
+    bc_levelmap::Codecs Codecs() {
+        std::lock_guard lock(codec_mutex);
+        bc_levelmap::Codecs c;
+        if (astc) {
+            const auto fn = astc;
+            void* user = astc_user;
+            c.astc = [fn, user](const u8* in, std::size_t in_size, u32 w, u32 h, u32 bw, u32 bh, u8* out) {
+                return fn(user, w, h, bw, bh, in, in_size, out, static_cast<std::size_t>(w) * h * 4) != 0;
+            };
+        }
+        return c;
+    }
+
     void StartLoader() {
+        // Level map assets first (the map shows as soon as they are read), the room layout
+        // (fallback map and position) after them, level maps on request in their own thread.
         loader = std::thread([this] {
             std::string log;
-            std::shared_ptr<const bc_world::World> w;
+            std::vector<std::string> catalog_names;
+            const auto catalog = [&]() -> const std::vector<std::string>& {
+                if (catalog_names.empty()) {
+                    if (auto cat = ReadRomfs(host, kCatalog))
+                        catalog_names =
+                            BundlesFromCatalog(std::string_view(reinterpret_cast<const char*>(cat->data()), cat->size()));
+                }
+                return catalog_names;
+            };
             try {
-                const bc_world::ReadFile read = [this](const std::string& path) {
-                    return ReadRomfs(host, path);
+                bc_levelmap::RomfsRead rr = [this](const std::string& path, std::uint64_t off, void* out,
+                                                    std::size_t size) -> std::size_t {
+                    if (!host.read_romfs)
+                        return 0;
+                    std::size_t n = host.read_romfs(host.userdata, path.c_str(), off, out, size);
+                    if (n == 0)
+                        n = host.read_romfs(host.userdata, ("/" + path).c_str(), off, out, size);
+                    return n;
                 };
+                std::vector<std::string> names_list = PinnedBundles();
+                const std::string probe = std::string("Data/StreamingAssets/aa/Switch/") + names_list[0];
+                if (rr(probe, 0, nullptr, 0) == 0) {
+                    names_list = catalog();
+                    log += "level map bundles: " + std::to_string(names_list.size()) + " catalog names\n";
+                }
+                auto a = std::make_shared<bc_levelmap::Assets>(rr, names_list);
+                auto n = bc_levelmap::LoadNames(*a);
+                {
+                    std::unique_lock lock(codec_mutex);
+                    codec_cv.wait_for(lock, std::chrono::seconds(10), [this] { return configured || stopping; });
+                }
+                auto c = bc_levelmap::LoadCommon(*a, Codecs());
+                log += c->log;
+                std::lock_guard lock(world_mutex);
+                assets = a;
+                names = n;
+                common = c;
+                assets_done = true;
+                world_log = log;
+            } catch (...) {
+                log += "level map assets failed\n";
+                std::lock_guard lock(world_mutex);
+                assets_done = true;
+            }
+            world_cv.notify_all();
+            lm_thread = std::thread([this] { LevelMapLoop(); });
+
+            // Room layout.
+            std::shared_ptr<const bc_world::World> w;
+            const bc_world::ReadFile read = [this](const std::string& path) { return ReadRomfs(host, path); };
+            try {
                 w = bc_world::LoadWorld(read, &log);
                 if (w->biomes.empty()) {
-                    // Pinned names missing (another build?): look the names up in the catalog.
                     log += "pinned biome bundles not found; scanning the catalog\n";
-                    if (auto cat = ReadRomfs(host, kCatalog)) {
-                        const std::string_view text(reinterpret_cast<const char*>(cat->data()),
-                                                    cat->size());
-                        const auto names = bc_world::BiomeBundlesFromCatalog(text);
-                        log += std::to_string(names.size()) + " names in the catalog\n";
-                        w = bc_world::LoadWorld(read, names, &log);
-                    } else {
-                        log += "catalog.json not readable\n";
+                    std::vector<std::string> biomes;
+                    for (const auto& name : catalog()) {
+                        if (name.rfind("data-world_biome_", 0) == 0)
+                            biomes.push_back(name);
                     }
+                    log += std::to_string(biomes.size()) + " biome names in the catalog\n";
+                    w = bc_world::LoadWorld(read, biomes, &log);
                 }
-            } catch (const std::exception& e) {
-                log += std::string("world load failed: ") + e.what() + "\n";
-                w.reset();
             } catch (...) {
-                log += "world load failed\n";
+                log += "room layout load failed\n";
                 w.reset();
             }
             {
                 std::lock_guard lock(world_mutex);
                 world = std::move(w);
-                world_log = std::move(log);
+                world_log = log;
                 world_done = true;
             }
             world_cv.notify_all();
         });
+    }
+
+    void LevelMapLoop() {
+        for (;;) {
+            std::string want;
+            {
+                std::unique_lock lock(lm_mutex);
+                lm_cv.wait(lock, [this] { return stopping || !lm_request.empty(); });
+                if (stopping)
+                    return;
+                want = std::move(lm_request);
+                lm_request.clear();
+            }
+            std::shared_ptr<bc_levelmap::Assets> a;
+            std::shared_ptr<const bc_levelmap::Names> n;
+            {
+                std::lock_guard lock(world_mutex);
+                a = assets;
+                n = names;
+            }
+            std::shared_ptr<const bc_levelmap::LevelMap> m;
+            const auto t0 = std::chrono::steady_clock::now();
+            std::string err;
+            std::string load_log;
+            try {
+                if (a && n)
+                    m = bc_levelmap::LoadLevelMap(*a, Codecs(), *n, want, &load_log);
+                else
+                    err = "(assets missing)";
+            } catch (...) {
+                m.reset();
+                err = "exception";
+            }
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            {
+                std::lock_guard lock(lm_mutex);
+                lm_ms = ms;
+                if (m) {
+                    lm_log = m->log;
+                    lm_cache.emplace_back(want, m);
+                    while (lm_cache.size() > 2)
+                        lm_cache.pop_front();
+                } else {
+                    lm_log = "level map " + want + " failed " + err + "\n" + load_log;
+                    lm_failed.insert(want);
+                }
+            }
+            lm_cv.notify_all();
+        }
     }
 
     std::shared_ptr<const bc_world::World> World() {
@@ -155,24 +427,65 @@ struct Instance {
         return world;
     }
 
-    void RememberFog(u64 id, std::shared_ptr<const bc_render::Fog> f) {
-        std::lock_guard lock(fog_mutex);
-        for (const auto& [k, v] : fogs) {
+    /// The level map of a world if loaded; asks for it otherwise. `state`: 0 none, 1 loading,
+    /// 2 ready, 3 failed.
+    std::shared_ptr<const bc_levelmap::LevelMap> LevelMap(const std::string& world_name, int* state) {
+        std::lock_guard lock(lm_mutex);
+        for (const auto& [k, v] : lm_cache) {
+            if (k == world_name) {
+                *state = 2;
+                return v;
+            }
+        }
+        if (lm_failed.count(world_name)) {
+            *state = 3;
+            return nullptr;
+        }
+        if (lm_request != world_name) {
+            lm_request = world_name;
+            lm_cv.notify_all();
+        }
+        *state = 1;
+        return nullptr;
+    }
+
+    /// The level map with a biome number, waiting for it to load (render worker).
+    std::shared_ptr<const bc_levelmap::LevelMap> WaitLevelMap(int number, int timeout_s) {
+        std::unique_lock lock(lm_mutex);
+        std::shared_ptr<const bc_levelmap::LevelMap> found;
+        lm_cv.wait_for(lock, std::chrono::seconds(timeout_s), [&] {
+            for (const auto& [k, v] : lm_cache) {
+                if (v && v->number == number) {
+                    found = v;
+                    return true;
+                }
+            }
+            for (const auto& f : lm_failed) {
+                if (bc_levelmap::BiomeNumber(f) == number)
+                    return true;
+            }
+            return stopping.load();
+        });
+        return found;
+    }
+
+    template <class T>
+    static void Remember(std::deque<std::pair<u64, T>>& q, u64 id, T v, std::size_t keep) {
+        for (const auto& [k, x] : q) {
             if (k == id)
                 return;
         }
-        fogs.emplace_back(id, std::move(f));
-        while (fogs.size() > 8)
-            fogs.pop_front();
+        q.emplace_back(id, std::move(v));
+        while (q.size() > keep)
+            q.pop_front();
     }
-
-    std::shared_ptr<const bc_render::Fog> FindFog(u64 id) {
-        std::lock_guard lock(fog_mutex);
-        for (const auto& [k, v] : fogs) {
+    template <class T>
+    static std::optional<T> Lookup(const std::deque<std::pair<u64, T>>& q, u64 id) {
+        for (const auto& [k, x] : q) {
             if (k == id)
-                return v;
+                return x;
         }
-        return nullptr;
+        return std::nullopt;
     }
 };
 
@@ -187,8 +500,7 @@ void PublishT(const EdenDsmodHostApi* h, const char* name, const std::string& v)
 
 std::string Hex(s64 v) {
     char buf[32];
-    std::snprintf(buf, sizeof buf, "%s0x%llX", v < 0 ? "-" : "",
-                  static_cast<unsigned long long>(v < 0 ? -v : v));
+    std::snprintf(buf, sizeof buf, "%s0x%llX", v < 0 ? "-" : "", static_cast<unsigned long long>(v < 0 ? -v : v));
     return buf;
 }
 
@@ -196,16 +508,10 @@ EdenDsmodBool SupportsBuild(const char* build_hex) {
     if (!build_hex)
         return EDEN_DSMOD_FALSE;
     const std::string b = build_hex;
-    // The loader passes the running build in upper-case hex; accept the full id, or the id with
-    // its zero tail trimmed (never shorter than 16 characters).
     const std::string full = kBuildHex;
     if (b.size() < 16 || b.size() > full.size())
         return EDEN_DSMOD_FALSE;
-    return full.compare(0, b.size(), b) == 0 &&
-                   full.find_first_not_of('0', std::max<std::size_t>(b.size(), 32)) ==
-                       std::string::npos
-               ? EDEN_DSMOD_TRUE
-               : EDEN_DSMOD_FALSE;
+    return full.compare(0, b.size(), b) == 0 ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
 }
 
 void* Create(const EdenDsmodHostApi* host, const char*) {
@@ -233,23 +539,113 @@ void Destroy(void* p) {
     if (!inst)
         return;
     try {
-        if (inst->loader.joinable())
-            inst->loader.join();
+        delete inst;
     } catch (...) {
     }
-    delete inst;
 }
 
-std::shared_ptr<bc_render::Fog> BuildFog(const bc_live::State& s) {
+// ---- exploration snapshots
+
+/// What the game says the player explored. Without readable exploration data only the
+/// current room is revealed: the map must never show what the player has not explored.
+std::shared_ptr<bc_mapdraw::Exploration> BuildExploration(const bc_live::State& s) {
+    auto ex = std::make_shared<bc_mapdraw::Exploration>();
+    ex->known = true;
+    ex->last_save_room = s.last_save_room;
+    if (s.fog_ok && s.fog_entries > 0) {
+        for (const auto& r : s.fog) {
+            auto& room = ex->rooms[r.key];
+            room.zones.insert(r.entered_zones.begin(), r.entered_zones.end());
+            room.zdoors.insert(r.entered_zdoors.begin(), r.entered_zdoors.end());
+            room.zdoor_zones.insert(r.discovered_zdoor_zones.begin(), r.discovered_zdoor_zones.end());
+            room.secrets.insert(r.discovered_secrets.begin(), r.discovered_secrets.end());
+            room.activated.insert(r.activated.begin(), r.activated.end());
+        }
+    } else if (s.room_ok && !s.room_id.empty()) {
+        ex->current_room_only = s.room_id;
+    }
+    return ex;
+}
+
+std::shared_ptr<bc_render::Fog> BuildFog(const bc_live::State& s, const bc_world::World* world) {
     auto f = std::make_shared<bc_render::Fog>();
-    if (!s.fog_ok || s.fog_matched == 0)
-        return f; // unknown: the map shows every room
     f->known = true;
-    for (const auto& r : s.fog) {
-        if (r.uid >= 0)
-            f->by_uid[r.uid] = r.states;
+    if (s.fog_ok && s.fog_matched > 0) {
+        for (const auto& r : s.fog) {
+            if (r.uid >= 0)
+                f->by_uid[r.uid] = r.states;
+        }
+    } else if (world && s.room_ok) {
+        if (const auto* b = world->FindWorld(s.world_name)) {
+            if (const auto* room = b->FindUid(s.room_uid))
+                f->by_uid[room->uid] = std::vector<u8>(room->chunks.size(), 3);
+        }
     }
     return f;
+}
+
+u64 ExploreId(const bc_live::State& s, bool world_ready) {
+    if (s.fog_ok && s.fog_entries > 0)
+        return s.fog_hash ^ (s.fog_matched > 0 ? 0 : 0x5A5A);
+    return 0x5EED000000000000ULL ^ (world_ready ? 1ULL << 40 : 0) ^ static_cast<u64>(static_cast<u32>(s.room_uid));
+}
+
+void PublishDebug(const EdenDsmodHostApi* h, const bc_live::State& s) {
+    PublishT(h, "bc.ver", kVersion);
+    PublishI(h, "bc.stage", s.stage);
+    PublishT(h, "bc.status", s.status);
+    PublishT(h, "bc.delta", Hex(s.delta));
+    PublishI(h, "bc.sf", s.static_fields_offset);
+    PublishI(h, "bc.nsys", s.system_count);
+    PublishT(h, "bc.systems", s.system_names);
+    PublishI(h, "bc.rm.ok", s.rm_ok);
+    PublishI(h, "bc.chunk.x", s.chunk_x);
+    PublishI(h, "bc.chunk.y", s.chunk_y);
+    PublishI(h, "bc.prev.x", s.prev_x);
+    PublishI(h, "bc.prev.y", s.prev_y);
+    PublishI(h, "bc.room.ok", s.room_ok);
+    PublishI(h, "bc.room.uid", s.room_uid);
+    PublishI(h, "bc.room.x", s.room_x);
+    PublishI(h, "bc.room.y", s.room_y);
+    PublishT(h, "bc.room.world", s.world_name);
+    PublishT(h, "bc.room.id", s.room_id);
+    PublishT(h, "bc.room.inst", s.room_instance);
+    PublishI(h, "bc.ex.uid", s.ex_room_uid);
+    PublishI(h, "bc.mm.x", static_cast<s64>(s.map_x * 100));
+    PublishI(h, "bc.mm.y", static_cast<s64>(s.map_y * 100));
+    PublishI(h, "bc.mm.z", static_cast<s64>(s.map_z * 100));
+    PublishI(h, "bc.fog.ok", s.fog_ok);
+    PublishI(h, "bc.fog.n", s.fog_entries);
+    PublishI(h, "bc.fog.matched", s.fog_matched);
+    std::string keys, cur;
+    int shown = 0;
+    std::size_t zones = 0;
+    for (const auto& r : s.fog) {
+        zones += r.entered_zones.size();
+        if (shown < 3) {
+            keys += (shown ? " , " : "") + r.key;
+            ++shown;
+        }
+        if (r.key == s.room_id && !s.room_id.empty()) {
+            cur = "zones";
+            for (const s32 z : r.entered_zones)
+                cur += " " + std::to_string(z);
+            cur += " doors";
+            for (const s32 z : r.entered_zdoors)
+                cur += " " + std::to_string(z);
+        }
+    }
+    PublishI(h, "bc.fog.zones", static_cast<s64>(zones));
+    PublishT(h, "bc.fog.keys", keys);
+    PublishT(h, "bc.fog.cur", cur);
+    PublishT(h, "bc.save", s.last_save_room);
+}
+
+std::string MapKey(const Window& w) {
+    char key[200];
+    std::snprintf(key, sizeof key, "module:bc:%s:%d:%d:%d:%d:%llx", w.legacy ? "map:2" : "lm:3", w.biome, w.zoom,
+                  w.cx, w.cy, static_cast<unsigned long long>(w.explore));
+    return key;
 }
 
 void Sample(void* p, const EdenDsmodHostApi* h) {
@@ -276,158 +672,220 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             fresh.fog = std::move(inst->live.fog);
             fresh.fog_hash = inst->live.fog_hash;
         }
+        if (!with_fog)
+            fresh.last_save_room = inst->live.last_save_room.empty() ? fresh.last_save_room : inst->live.last_save_room;
         inst->live = std::move(fresh);
         const bc_live::State& s = inst->live;
-        if (with_fog) {
-            const u64 id = s.fog_ok && s.fog_matched ? s.fog_hash : 0;
-            if (id != inst->fog_id) {
-                inst->fog_id = id;
-                inst->fog = BuildFog(s);
-            }
-            inst->RememberFog(inst->fog_id, inst->fog);
-        }
-
-        PublishT(h, "bc.ver", kVersion);
-        PublishI(h, "bc.stage", s.stage);
-        PublishT(h, "bc.status", s.status);
-        PublishT(h, "bc.delta", Hex(s.delta));
-        PublishI(h, "bc.sf", s.static_fields_offset);
-        PublishI(h, "bc.nsys", s.system_count);
-        PublishT(h, "bc.systems", s.system_names);
-        PublishI(h, "bc.rm.ok", s.rm_ok);
-        PublishI(h, "bc.chunk.x", s.chunk_x);
-        PublishI(h, "bc.chunk.y", s.chunk_y);
-        PublishI(h, "bc.prev.x", s.prev_x);
-        PublishI(h, "bc.prev.y", s.prev_y);
-        PublishI(h, "bc.room.ok", s.room_ok);
-        PublishI(h, "bc.room.uid", s.room_uid);
-        PublishI(h, "bc.room.x", s.room_x);
-        PublishI(h, "bc.room.y", s.room_y);
-        PublishT(h, "bc.room.world", s.world_name);
-        PublishT(h, "bc.room.id", s.room_id);
-        PublishT(h, "bc.room.inst", s.room_instance);
-        PublishI(h, "bc.ex.uid", s.ex_room_uid);
-        PublishI(h, "bc.mm.x", static_cast<s64>(s.map_x * 100));
-        PublishI(h, "bc.mm.y", static_cast<s64>(s.map_y * 100));
-        PublishI(h, "bc.mm.z", static_cast<s64>(s.map_z * 100));
-        PublishI(h, "bc.fog.ok", s.fog_ok);
-        PublishI(h, "bc.fog.n", s.fog_entries);
-        PublishI(h, "bc.fog.matched", s.fog_matched);
-        {
-            std::string keys, cur;
-            int shown = 0;
-            for (const auto& r : s.fog) {
-                if (shown < 3) {
-                    keys += (shown ? " | " : "") + r.key;
-                    ++shown;
-                }
-                if (r.uid == s.room_uid && s.room_uid >= 0) {
-                    cur = std::to_string(r.w) + "x" + std::to_string(r.h) + ":";
-                    for (const u8 st : r.states)
-                        cur += static_cast<char>('0' + std::min<int>(st, 9));
-                }
-            }
-            PublishT(h, "bc.fog.keys", keys);
-            PublishT(h, "bc.fog.cur", cur);
-        }
-
-        // World model status.
         const auto world = inst->World();
-        std::string world_log;
-        bool world_done = false;
+        const bool world_ready = world && !world->biomes.empty();
+        if (const u64 id = ExploreId(s, world_ready); id != inst->explore_id || !inst->exploration) {
+            inst->explore_id = id;
+            inst->exploration = BuildExploration(s);
+            inst->fog = BuildFog(s, world.get());
+            std::lock_guard lock(inst->ex_mutex);
+            Instance::Remember(inst->explorations, id, inst->exploration, 8);
+            Instance::Remember(inst->fogs, id, inst->fog, 8);
+        }
+        PublishDebug(h, s);
         {
             std::lock_guard lock(inst->world_mutex);
-            world_log = inst->world_log;
-            world_done = inst->world_done;
+            PublishT(h, "bc.world.log", inst->world_log);
+            PublishI(h, "bc.world.done", inst->world_done);
+            PublishI(h, "bc.assets.done", inst->assets_done);
         }
-        PublishI(h, "bc.world.ready", world && !world->biomes.empty());
-        PublishI(h, "bc.world.done", world_done);
+        PublishI(h, "bc.world.ready", world_ready);
         PublishI(h, "bc.world.biomes", world ? static_cast<s64>(world->biomes.size()) : 0);
         PublishI(h, "bc.world.rooms", world ? static_cast<s64>(world->RoomCount()) : 0);
-        PublishT(h, "bc.world.log", world_log);
         PublishI(h, "bc.zoom", inst->zoom);
-        PublishI(h, "bc.unexp", inst->show_unexplored);
-        PublishI(h, "bc.follow", inst->manual_biome < 0);
 
-        // Which biome to draw, and where the player is on it.
-        int biome_index = -1;
-        int mode = 0;
-        int pcx = 0, pcy = 0;
-        bool have_player = false;
-        if (world && !world->biomes.empty()) {
-            if (inst->manual_biome >= 0) {
-                biome_index = inst->manual_biome % static_cast<int>(world->biomes.size());
-            } else if (s.room_ok) {
-                for (std::size_t i = 0; i < world->biomes.size(); ++i) {
-                    if (world->biomes[i].world_name == s.world_name)
-                        biome_index = static_cast<int>(i);
-                }
+        // The level map of the player's biome.
+        int lm_state = 0;
+        std::shared_ptr<const bc_levelmap::LevelMap> lm;
+        const int number = bc_levelmap::BiomeNumber(s.world_name);
+        if (s.room_ok && number >= 0) {
+            bool assets_ready;
+            {
+                std::lock_guard lock(inst->world_mutex);
+                assets_ready = inst->assets_done && inst->assets;
             }
-            if (biome_index >= 0 && s.room_ok && s.rm_ok) {
-                const auto& b = world->biomes[static_cast<std::size_t>(biome_index)];
-                if (b.world_name == s.world_name) {
-                    const bc_world::Room* room = b.FindUid(s.room_uid);
-                    if (room && s.chunk_x >= 0 && s.chunk_y >= 0 && s.chunk_x < room->w &&
-                        s.chunk_y < room->h) {
-                        mode = 1; // room-local chunk
-                        pcx = room->pos_x + s.chunk_x;
-                        pcy = room->pos_y + s.chunk_y;
-                        have_player = true;
-                    } else if (s.chunk_x >= b.min_cx && s.chunk_x <= b.max_cx &&
-                               s.chunk_y >= b.min_cy && s.chunk_y <= b.max_cy) {
-                        mode = 2; // already a biome chunk
-                        pcx = s.chunk_x;
-                        pcy = s.chunk_y;
-                        have_player = true;
-                    } else if (room) {
-                        pcx = room->pos_x + room->w / 2;
-                        pcy = room->pos_y + room->h / 2;
+            if (assets_ready)
+                lm = inst->LevelMap(s.world_name, &lm_state);
+        }
+        PublishI(h, "bc.lm.state", lm_state);
+        {
+            std::lock_guard lock(inst->lm_mutex);
+            PublishT(h, "bc.lm.log", inst->lm_log);
+            PublishI(h, "bc.lm.ms", static_cast<s64>(inst->lm_ms));
+        }
+        PublishI(h, "bc.render.ms", inst->last_render_ms.load());
+
+        // Fallback biome (room layout) when the level map cannot be read.
+        const bc_world::Biome* legacy = nullptr;
+        if (!lm && lm_state == 3 && world && s.room_ok)
+            legacy = world->FindWorld(s.world_name);
+
+        // Where the player is, in world units.
+        double pwx = 0, pwy = 0;
+        int pos_mode = 0; // 1 exact world position, 2 chunk centre
+        {
+            const bool finite = std::isfinite(s.map_x) && std::isfinite(s.map_y);
+            bool plausible = false;
+            if (lm)
+                plausible = s.map_x > lm->x0 - 64 && s.map_x < lm->x1 + 64 && s.map_y > lm->y0 - 64 &&
+                            s.map_y < lm->y1 + 64;
+            else if (legacy)
+                plausible = s.map_x > static_cast<double>((legacy->min_cx - 2) * legacy->chunk_w) &&
+                            s.map_x < static_cast<double>((legacy->max_cx + 3) * legacy->chunk_w) &&
+                            s.map_y > static_cast<double>((legacy->min_cy - 2) * legacy->chunk_h) &&
+                            s.map_y < static_cast<double>((legacy->max_cy + 3) * legacy->chunk_h);
+            if (s.ex_ok && finite && !(s.map_x == 0 && s.map_y == 0) && plausible) {
+                pwx = s.map_x;
+                pwy = s.map_y;
+                pos_mode = 1;
+            } else if (world && s.rm_ok) {
+                if (const auto* b = world->FindWorld(s.world_name)) {
+                    if (const bc_world::Room* room = b->FindUid(s.room_uid);
+                        room && s.chunk_x >= 0 && s.chunk_y >= 0 && s.chunk_x < room->w && s.chunk_y < room->h) {
+                        pwx = (room->pos_x + s.chunk_x + 0.5) * b->chunk_w;
+                        pwy = (room->pos_y + s.chunk_y + 0.5) * b->chunk_h;
+                        pos_mode = 2;
                     }
                 }
             }
         }
-        PublishI(h, "bc.chunk.mode", mode);
+        PublishI(h, "bc.pos.mode", pos_mode);
 
-        if (biome_index >= 0) {
-            const auto& b = world->biomes[static_cast<std::size_t>(biome_index)];
-            bc_render::Params prm;
-            prm.zoom = inst->zoom;
-            prm.out_w = kMapW;
-            prm.out_h = kMapH;
-            prm.show_unexplored = inst->show_unexplored;
-            prm.current_uid = s.room_ok && b.world_name == s.world_name ? s.room_uid : -1;
-            if (!have_player && prm.current_uid < 0) {
-                pcx = (b.min_cx + b.max_cx) / 2;
-                pcy = (b.min_cy + b.max_cy) / 2;
+        // Title: the game's level and district names.
+        {
+            std::string title, subtitle;
+            if (lm) {
+                title = lm->level_name.empty() ? BiomeTitle(s.world_name) : lm->level_name;
+                if (pos_mode) {
+                    if (const auto* d = lm->DistrictAt(static_cast<float>(pwx), static_cast<float>(pwy)))
+                        subtitle = d->name;
+                }
+            } else if (s.room_ok && number >= 0) {
+                title = BiomeTitle(s.world_name);
             }
-            prm.center_cx = prm.zoom ? pcx : 0;
-            prm.center_cy = prm.zoom ? pcy : 0;
-            char key[256];
-            std::snprintf(key, sizeof key, "module:bc:map:1:%d:%d:%d:%d:%d:%llx:%d", biome_index,
-                          prm.zoom, prm.center_cx, prm.center_cy, prm.current_uid,
-                          static_cast<unsigned long long>(inst->fog_id), prm.show_unexplored);
-            inst->RememberFog(inst->fog_id, inst->fog);
-            PublishT(h, "bc.map.key", key);
-            PublishI(h, "bc.map.ready", 1);
-            PublishT(h, "bc.biome.label", BiomeLabel(b.world_name) +
-                                              (inst->manual_biome >= 0 ? "  (browse)" : ""));
-            if (have_player) {
-                const bc_render::View v = bc_render::ComputeView(b, prm);
-                double px, py;
-                bc_render::TileToPixel(v, (pcx - b.min_cx + 0.5) * b.chunk_w,
-                                       (pcy - b.min_cy + 0.5) * b.chunk_h, px, py);
-                const bool inside = px >= 0 && py >= 0 && px < kMapW && py < kMapH;
-                PublishI(h, "bc.mk.show", inside);
-                PublishI(h, "bc.mk.x", static_cast<s64>(px) - kMarkerHalf);
-                PublishI(h, "bc.mk.y", static_cast<s64>(py) - kMarkerHalf);
+            PublishT(h, "bc.title", title);
+            bool font = false;
+            {
+                std::lock_guard lock(inst->world_mutex);
+                font = inst->common && !inst->common->font.Empty();
+            }
+            if (font && !title.empty()) {
+                const u64 id = Fnv(Fnv(0xcbf29ce484222325ULL, title), "|" + subtitle);
+                char key[64];
+                std::snprintf(key, sizeof key, "module:bc:title:%llx", static_cast<unsigned long long>(id));
+                {
+                    std::lock_guard lock(inst->ex_mutex);
+                    Instance::Remember(inst->titles, id, Title{title, subtitle}, 16);
+                }
+                PublishT(h, "bc.title.key", key);
+                PublishI(h, "bc.title.img", 1);
             } else {
-                PublishI(h, "bc.mk.show", 0);
+                PublishI(h, "bc.title.img", 0);
+            }
+        }
+
+        bool follow = false, area = false, marker = false;
+        double mk_dx = 0, mk_dy = 0;
+        const int zoom = std::clamp(inst->zoom, 0, kZoomLevels - 1);
+        if ((lm || legacy) && number >= 0) {
+            if (zoom > 0 && pos_mode) {
+                follow = true;
+                const double scale = kZoomScale[zoom];
+                Window& cur = inst->cur;
+                const bool same_view = cur.valid && cur.biome == number && cur.zoom == zoom && cur.legacy == !lm;
+                const bool far = same_view && (std::fabs(pwx - cur.cx) * scale > kRecentreX ||
+                                               std::fabs(pwy - cur.cy) * scale > kRecentreY);
+                if (!same_view || far || cur.explore != inst->explore_id) {
+                    // Keep the old window underneath while the new one loads.
+                    inst->prev = same_view ? cur : Window{};
+                    cur.valid = true;
+                    cur.legacy = !lm;
+                    cur.biome = number;
+                    cur.zoom = zoom;
+                    if (!same_view || far) {
+                        cur.cx = static_cast<int>(std::lround(pwx));
+                        cur.cy = static_cast<int>(std::lround(pwy));
+                    }
+                    cur.explore = inst->explore_id;
+                    cur.key = MapKey(cur);
+                }
+                const auto offset = [&](const Window& w, double& ox, double& oy) {
+                    const auto v = bc_mapdraw::CenteredView(w.cx, w.cy, scale, kWindowW, kWindowH);
+                    double px, py;
+                    v.WorldToPixel(pwx, pwy, px, py);
+                    ox = kCanvasW / 2.0 - px;
+                    oy = kCanvasH / 2.0 - py;
+                };
+                double ox, oy;
+                offset(cur, ox, oy);
+                PublishT(h, "bc.map.key", cur.key);
+                PublishI(h, "bc.map.ox", std::lround(ox));
+                PublishI(h, "bc.map.oy", std::lround(oy));
+                const bool prev_ok = inst->prev.valid && inst->prev.biome == number && inst->prev.zoom == zoom;
+                if (prev_ok) {
+                    double pox, poy;
+                    offset(inst->prev, pox, poy);
+                    PublishT(h, "bc.map.pkey", inst->prev.key);
+                    PublishI(h, "bc.map.pox", std::lround(pox));
+                    PublishI(h, "bc.map.poy", std::lround(poy));
+                }
+                PublishI(h, "bc.map.pshow", prev_ok);
+                marker = true;
+                mk_dy = -kPlayerLift * scale;
+            } else {
+                // Whole area on screen; the marker moves instead of the map.
+                area = true;
+                inst->cur.valid = false;
+                inst->prev.valid = false;
+                Window w;
+                w.legacy = !lm;
+                w.biome = number;
+                w.zoom = 0;
+                w.explore = inst->explore_id;
+                if (lm && pos_mode) {
+                    // The navigation zone the player is in (the main map, a tower, a Z-room...).
+                    w.cx = lm->NavZoneAt(static_cast<float>(pwx), static_cast<float>(pwy));
+                }
+                PublishT(h, "bc.map.akey", MapKey(w));
+                if (pos_mode) {
+                    double px = 0, py = 0;
+                    if (lm) {
+                        const auto v = bc_mapdraw::FitZone(*lm, w.cx, kCanvasW, kCanvasH);
+                        v.WorldToPixel(pwx, pwy, px, py);
+                        py -= kPlayerLift * v.scale;
+                    } else {
+                        bc_render::Params prm;
+                        prm.zoom = 0;
+                        prm.out_w = kCanvasW;
+                        prm.out_h = kCanvasH;
+                        const auto view = bc_render::ComputeView(*legacy, prm);
+                        double tx, ty;
+                        bc_render::WorldToTile(*legacy, pwx, pwy, tx, ty);
+                        bc_render::TileToPixel(view, tx, ty, px, py);
+                    }
+                    mk_dx = px - kCanvasW / 2.0;
+                    mk_dy = py - kCanvasH / 2.0;
+                    marker = true;
+                }
             }
         } else {
-            PublishI(h, "bc.map.ready", 0);
-            PublishI(h, "bc.mk.show", 0);
-            PublishT(h, "bc.biome.label", world_done ? "Waiting for the game..." : "Reading map...");
+            PublishI(h, "bc.map.pshow", 0);
         }
+        PublishI(h, "bc.map.follow", follow);
+        PublishI(h, "bc.map.area", area);
+        PublishI(h, "bc.map.ready", follow || area);
+        PublishI(h, "bc.map.loading", lm_state == 1 && !follow && !area);
+        // One marker widget per zoom level (their sizes differ).
+        PublishI(h, "bc.mk.show", marker);
+        PublishI(h, "bc.mk.z0", marker && zoom == 0);
+        PublishI(h, "bc.mk.z1", marker && zoom == 1);
+        PublishI(h, "bc.mk.z2", marker && zoom == 2);
+        PublishI(h, "bc.mk.dx", std::lround(mk_dx));
+        PublishI(h, "bc.mk.dy", std::lround(mk_dy));
 
         const auto t1 = std::chrono::steady_clock::now();
         const double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
@@ -440,42 +898,35 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
 
 void Tick(void*, const EdenDsmodHostApi*) {}
 
-void Configure(void*, const EdenDsmodHostExtensions*) {}
+void Configure(void* p, const EdenDsmodHostExtensions* host) {
+    auto* inst = static_cast<Instance*>(p);
+    if (!inst)
+        return;
+    {
+        std::lock_guard lock(inst->codec_mutex);
+        if (host && host->struct_size >= sizeof(EdenDsmodHostExtensions)) {
+            inst->astc = host->decode_astc;
+            inst->astc_user = host->userdata;
+        }
+        inst->configured = true;
+    }
+    inst->codec_cv.notify_all();
+}
 
-EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
+EdenDsmodBool OnAction(void* p, const char* action, int64_t) {
     auto* inst = static_cast<Instance*>(p);
     if (!inst || !action)
         return EDEN_DSMOD_FALSE;
     try {
         const std::string a = action;
-        const auto world = inst->World();
-        const int biomes = world ? static_cast<int>(world->biomes.size()) : 0;
+        // Close -> medium -> whole area -> close.
         if (a == "zoom") {
-            inst->zoom = (inst->zoom + 1) % 3;
+            inst->zoom = inst->zoom == 0 ? kZoomLevels - 1 : inst->zoom - 1;
         } else if (a == "zoom_in") {
-            inst->zoom = std::min(inst->zoom + 1, 2);
+            inst->zoom = std::min(inst->zoom + 1, kZoomLevels - 1);
         } else if (a == "zoom_out") {
             inst->zoom = std::max(inst->zoom - 1, 0);
-        } else if (a == "unexp") {
-            inst->show_unexplored = !inst->show_unexplored;
-        } else if (a == "biome_next" || a == "biome_prev") {
-            if (biomes == 0)
-                return EDEN_DSMOD_FALSE;
-            int cur = inst->manual_biome;
-            if (cur < 0) {
-                cur = 0;
-                for (int i = 0; i < biomes; ++i) {
-                    if (world->biomes[static_cast<std::size_t>(i)].world_name ==
-                        inst->live.world_name)
-                        cur = i;
-                }
-            }
-            cur += a == "biome_next" ? 1 : biomes - 1;
-            inst->manual_biome = cur % biomes;
-        } else if (a == "follow") {
-            inst->manual_biome = -1;
         } else {
-            (void)argument;
             return EDEN_DSMOD_FALSE;
         }
         return EDEN_DSMOD_TRUE;
@@ -484,41 +935,142 @@ EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
     }
 }
 
+bool LoadPlayer(Instance* inst, int size, void* receiver, EdenDsmodImageSink sink) {
+    std::shared_ptr<const bc_levelmap::Common> common;
+    {
+        std::unique_lock lock(inst->world_mutex);
+        inst->world_cv.wait_for(lock, std::chrono::seconds(20), [inst] { return inst->assets_done; });
+        common = inst->common;
+    }
+    std::vector<u8> px;
+    if (common && !common->player.tex.Empty())
+        px = bc_mapdraw::RenderSprite(common->player, size, size);
+    else
+        px = bc_render::RenderPlayerIcon(size);
+    sink(receiver, static_cast<u32>(size), static_cast<u32>(size), px.data(), px.size());
+    return true;
+}
+
+bool LoadTitle(Instance* inst, u64 id, void* receiver, EdenDsmodImageSink sink) {
+    std::optional<Title> t;
+    {
+        std::lock_guard lock(inst->ex_mutex);
+        t = Instance::Lookup(inst->titles, id);
+    }
+    std::shared_ptr<const bc_levelmap::Common> common;
+    {
+        std::lock_guard lock(inst->world_mutex);
+        common = inst->common;
+    }
+    if (!t || !common || common->font.Empty())
+        return false;
+    const auto px = bc_mapdraw::RenderTitle(common->font, t->title, t->subtitle, kTitleW, kTitleH);
+    sink(receiver, kTitleW, kTitleH, px.data(), px.size());
+    return true;
+}
+
+bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64 explore, void* receiver,
+                       EdenDsmodImageSink sink) {
+    const auto lm = inst->WaitLevelMap(number, 30);
+    if (!lm)
+        return false;
+    std::shared_ptr<const bc_mapdraw::Exploration> ex;
+    {
+        std::lock_guard lock(inst->ex_mutex);
+        if (auto e = Instance::Lookup(inst->explorations, explore))
+            ex = *e;
+    }
+    if (!ex) {
+        auto empty = std::make_shared<bc_mapdraw::Exploration>();
+        empty->known = true; // unknown snapshot: reveal nothing rather than everything
+        ex = empty;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto reveal = bc_mapdraw::BuildReveal(*lm, *ex);
+    bc_mapdraw::RenderOptions opt;
+    opt.threads = kRenderThreads;
+    std::vector<u8> px;
+    int w, h;
+    if (zoom == 0) {
+        w = kCanvasW;
+        h = kCanvasH;
+        opt.min_icon_px = 22;
+        px = bc_mapdraw::Render(*lm, *reveal, bc_mapdraw::FitZone(*lm, cx, w, h), opt);
+    } else {
+        w = kWindowW;
+        h = kWindowH;
+        const double scale = kZoomScale[std::clamp(zoom, 1, kZoomLevels - 1)];
+        px = bc_mapdraw::Render(*lm, *reveal, bc_mapdraw::CenteredView(cx, cy, scale, w, h), opt);
+    }
+    inst->last_render_ms = static_cast<int>(
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    sink(receiver, static_cast<u32>(w), static_cast<u32>(h), px.data(), px.size());
+    return true;
+}
+
+bool LoadLegacyImage(Instance* inst, int number, int zoom, int cx, int cy, u64 explore, void* receiver,
+                     EdenDsmodImageSink sink) {
+    std::shared_ptr<const bc_world::World> world;
+    {
+        std::unique_lock lock(inst->world_mutex);
+        inst->world_cv.wait_for(lock, std::chrono::seconds(5), [inst] { return inst->world_done; });
+        world = inst->world;
+    }
+    if (!world)
+        return false;
+    const bc_world::Biome* biome = nullptr;
+    for (const auto& b : world->biomes) {
+        if (bc_levelmap::BiomeNumber(b.world_name) == number)
+            biome = &b;
+    }
+    if (!biome)
+        return false;
+    std::shared_ptr<const bc_render::Fog> fog;
+    {
+        std::lock_guard lock(inst->ex_mutex);
+        if (auto f = Instance::Lookup(inst->fogs, explore))
+            fog = *f;
+    }
+    if (!fog) {
+        auto empty = std::make_shared<bc_render::Fog>();
+        empty->known = true;
+        fog = empty;
+    }
+    bc_render::Params prm;
+    prm.zoom = std::clamp(zoom, 0, bc_render::kZoomLevels - 1);
+    // Window centre: world units -> biome tiles.
+    prm.center_x = cx - static_cast<double>(biome->min_cx) * biome->chunk_w;
+    prm.center_y = cy - static_cast<double>(biome->min_cy) * biome->chunk_h;
+    prm.out_w = prm.zoom == 0 ? kCanvasW : kWindowW;
+    prm.out_h = prm.zoom == 0 ? kCanvasH : kWindowH;
+    const auto pixels = bc_render::Render(*biome, *fog, prm);
+    sink(receiver, static_cast<u32>(prm.out_w), static_cast<u32>(prm.out_h), pixels.data(), pixels.size());
+    return true;
+}
+
 EdenDsmodBool LoadImage(void* p, const EdenDsmodHostApi*, const char* key, void* receiver,
                         EdenDsmodImageSink sink) {
     auto* inst = static_cast<Instance*>(p);
     if (!inst || !key || !sink)
         return EDEN_DSMOD_FALSE;
     try {
-        int biome = 0, zoom = 0, cx = 0, cy = 0, uid = -1, unexp = 0, version = 0;
-        unsigned long long fog_id = 0;
-        if (std::sscanf(key, "module:bc:map:%d:%d:%d:%d:%d:%d:%llx:%d", &version, &biome, &zoom,
-                        &cx, &cy, &uid, &fog_id, &unexp) != 8 ||
-            version != 1)
-            return EDEN_DSMOD_FALSE;
-        std::shared_ptr<const bc_world::World> world;
-        {
-            std::unique_lock lock(inst->world_mutex);
-            inst->world_cv.wait_for(lock, std::chrono::seconds(5), [inst] { return inst->world_done; });
-            world = inst->world;
+        int size = 0;
+        if (std::sscanf(key, "module:bc:player:%d", &size) == 1 || std::sscanf(key, "module:bc:icon:player:%d", &size) == 1) {
+            if (size < 8 || size > 256)
+                return EDEN_DSMOD_FALSE;
+            return LoadPlayer(inst, size, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         }
-        if (!world || biome < 0 || biome >= static_cast<int>(world->biomes.size()))
-            return EDEN_DSMOD_FALSE;
-        auto fog = inst->FindFog(fog_id);
-        if (!fog)
-            fog = std::make_shared<bc_render::Fog>(); // unknown snapshot: draw every room
-        bc_render::Params prm;
-        prm.zoom = zoom;
-        prm.center_cx = cx;
-        prm.center_cy = cy;
-        prm.current_uid = uid;
-        prm.show_unexplored = unexp != 0;
-        prm.out_w = kMapW;
-        prm.out_h = kMapH;
-        const auto pixels = bc_render::Render(world->biomes[static_cast<std::size_t>(biome)], *fog, prm);
-        sink(receiver, static_cast<u32>(prm.out_w), static_cast<u32>(prm.out_h), pixels.data(),
-             pixels.size());
-        return EDEN_DSMOD_TRUE;
+        unsigned long long id = 0;
+        if (std::sscanf(key, "module:bc:title:%llx", &id) == 1)
+            return LoadTitle(inst, id, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        int number = 0, zoom = 0, cx = 0, cy = 0;
+        if (std::sscanf(key, "module:bc:lm:3:%d:%d:%d:%d:%llx", &number, &zoom, &cx, &cy, &id) == 5)
+            return LoadLevelMapImage(inst, number, zoom, cx, cy, id, receiver, sink) ? EDEN_DSMOD_TRUE
+                                                                                   : EDEN_DSMOD_FALSE;
+        if (std::sscanf(key, "module:bc:map:2:%d:%d:%d:%d:%llx", &number, &zoom, &cx, &cy, &id) == 5)
+            return LoadLegacyImage(inst, number, zoom, cx, cy, id, receiver, sink) ? EDEN_DSMOD_TRUE
+                                                                                 : EDEN_DSMOD_FALSE;
+        return EDEN_DSMOD_FALSE;
     } catch (...) {
         return EDEN_DSMOD_FALSE;
     }

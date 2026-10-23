@@ -3,7 +3,10 @@
 // dlopen, eden_dsmod_get_module / eden_dsmod_get_extensions, create, sample, on_action,
 // load_image, destroy. Guest memory is a FakeGuest; romfs is a directory.
 //   bc_host_sim <module.so> <romfs-or-bundle-dir> <out-dir>
+#include <dirent.h>
 #include <dlfcn.h>
+
+#include <cmath>
 
 #include <chrono>
 #include <cstdio>
@@ -14,9 +17,13 @@
 #include <string>
 #include <thread>
 
+#include "bc_levelmap.h"
 #include "core/mods/dsmod_module_abi.h"
 #include "core/mods/dsmod_module_extensions.h"
 #include "fake_guest.h"
+#ifdef BC_TEST_ASTC
+#include "astc_rgba.h" // test-only ASTC decoder (not part of the module)
+#endif
 
 namespace {
 
@@ -67,6 +74,17 @@ std::size_t ReadRomfs(void*, const char* path, std::uint64_t off, void* out, std
     return n;
 }
 std::int64_t GetI(void*, const char*, std::int64_t fb) { return fb; }
+EdenDsmodBool DecodeAstc(void*, std::uint32_t w, std::uint32_t h, std::uint32_t bw, std::uint32_t bh,
+                         const std::uint8_t* in, std::size_t in_size, std::uint8_t* out, std::size_t out_size) {
+#ifdef BC_TEST_ASTC
+    if (out_size < static_cast<std::size_t>(w) * h * 4)
+        return EDEN_DSMOD_FALSE;
+    return TestAstcDecode(in, in_size, w, h, bw, bh, out) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+#else
+    (void)w, (void)h, (void)bw, (void)bh, (void)in, (void)in_size, (void)out, (void)out_size;
+    return EDEN_DSMOD_FALSE;
+#endif
+}
 double GetF(void*, const char*, double fb) { return fb; }
 const char* GetT(void*, const char*) { return nullptr; }
 
@@ -100,7 +118,10 @@ int main(int argc, char** argv) {
     sim.romfs = argv[2];
     const std::string out = argv[3];
     // Streets Poor room uid 59 at (-7, 15), 2x2 chunks, chunk 0 disabled; player in chunk (1,0).
-    sim.guest.Build(0x4000, 59, -7, 15, 1, 0, "World_Biome_01_Streets_Poor", {0, 3, 3, 1}, 2, 2);
+    // Room 59 (StreetsPoor_Room21): positionCoord (-7, 15) + editionOffset (0, -1) = chunk origin
+    // (-7, 14). The player stands in its chunk (1, 0): world x = -6 * 24 + 10, y = 14 * 13 + 4.
+    sim.guest.Build(0x4000, 59, -7, 15, 1, 0, "World_Biome_01_Streets_Poor", {0, 3, 3, 1}, 2, 2,
+                    -134.0f, 186.0f);
 
     void* lib = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!lib) {
@@ -167,7 +188,45 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "create failed\n");
         return 1;
     }
-    ext->configure(inst, nullptr);
+    EdenDsmodHostExtensions hx{};
+    hx.version = EDEN_DSMOD_EXT_VERSION;
+    hx.struct_size = sizeof(hx);
+    hx.abi_hash = EDEN_DSMOD_EXT_HASH;
+    hx.decode_astc = DecodeAstc;
+    ext->configure(inst, &hx);
+    // Explored zones: every zone of the rooms near the start and near (40, 40), from the same
+    // level map the module reads (the sim plays the game's part here).
+    {
+        std::vector<std::string> names;
+        const std::string dir = sim.romfs + "/Data/StreamingAssets/aa/Switch";
+        if (DIR* d = opendir(dir.c_str())) {
+            while (auto* e = readdir(d))
+                if (e->d_name[0] != '.')
+                    names.push_back(e->d_name);
+            closedir(d);
+        }
+        bc_levelmap::Assets assets(
+            [](const std::string& p, std::uint64_t off, void* out, std::size_t n) { return ReadRomfs(nullptr, p.c_str(), off, out, n); },
+            names);
+        bc_levelmap::Codecs codecs;
+        bc_levelmap::Names nm;
+        if (auto lm = bc_levelmap::LoadLevelMap(assets, codecs, nm, "World_Biome_01_Streets_Poor")) {
+            std::map<std::string, std::vector<std::int32_t>> rooms;
+            for (const auto& z : lm->zones) {
+                for (const auto& sh : z.shapes) {
+                    const float cx = (sh.x0 + sh.x1) / 2, cy = (sh.y0 + sh.y1) / 2;
+                    if (std::hypot(cx + 134.0f, cy - 186.0f) < 60.0f || std::hypot(cx - 40.0f, cy - 40.0f) < 90.0f) {
+                        rooms[z.room_id].push_back(z.zone_id);
+                        break;
+                    }
+                }
+            }
+            for (const auto& [k, zs] : rooms)
+                sim.guest.AddRoom(k, zs, {27, 29});
+            sim.guest.SetLastSave("World_Biome_01_Streets_Poor_StreetsPoor_SaveRoom02_uid78");
+            std::printf("sim: %zu explored rooms\n", rooms.size());
+        }
+    }
     const auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < 600; ++i) {
         sim.ints.clear();
@@ -185,18 +244,74 @@ int main(int argc, char** argv) {
     for (const auto& [k, v] : sim.texts)
         std::printf("  %-18s '%s'\n", k.c_str(), v.substr(0, 120).c_str());
 
-    for (int step = 0; step < 3; ++step) {
-        Png png{out + "/sim_zoom" + std::to_string(step) + ".ppm"};
-        const std::string key = sim.texts["bc.map.key"];
-        const auto ok = ext->load_image(inst, &host, key.c_str(), &png, Sink);
-        std::printf("load_image(%s) = %u  marker show=%lld x=%lld y=%lld\n", key.c_str(), ok,
-                    static_cast<long long>(sim.ints["bc.mk.show"]),
-                    static_cast<long long>(sim.ints["bc.mk.x"]),
-                    static_cast<long long>(sim.ints["bc.mk.y"]));
-        ext->on_action(inst, "zoom", 0);
-        for (int i = 0; i < 31; ++i)
+    const auto sample_n = [&](int n) {
+        for (int i = 0; i < n; ++i) {
+            sim.ints.clear();
+            sim.texts.clear();
             api->sample(inst, &host);
+        }
+    };
+    const auto save = [&](const std::string& key, const std::string& name) {
+        Png png{out + "/" + name + ".ppm"};
+        const auto ok = ext->load_image(inst, &host, key.c_str(), &png, Sink);
+        std::printf("load_image(%s) = %u\n", key.c_str(), ok);
+    };
+    std::printf("pos.mode=%lld follow=%lld key=%s ox=%lld oy=%lld\n",
+                static_cast<long long>(sim.ints["bc.pos.mode"]),
+                static_cast<long long>(sim.ints["bc.map.follow"]), sim.texts["bc.map.key"].c_str(),
+                static_cast<long long>(sim.ints["bc.map.ox"]), static_cast<long long>(sim.ints["bc.map.oy"]));
+    save(sim.texts["bc.map.key"], "sim_follow");
+    save("module:bc:icon:player:48", "sim_icon");
+    // Walk right 40 tiles: the map slides every sample, the window is re-rendered once.
+    std::string last_key = sim.texts["bc.map.key"];
+    int key_changes = 0;
+    for (int step = 1; step <= 40; ++step) {
+        sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -134.0f + step);
+        sample_n(1);
+        if (sim.texts["bc.map.key"] != last_key) {
+            ++key_changes;
+            std::printf("  step %d: new window %s (prev shown %lld)\n", step,
+                        sim.texts["bc.map.key"].c_str(), static_cast<long long>(sim.ints["bc.map.pshow"]));
+            last_key = sim.texts["bc.map.key"];
+        }
+        if (step % 10 == 0)
+            std::printf("  step %d: ox=%lld oy=%lld pox=%lld\n", step,
+                        static_cast<long long>(sim.ints["bc.map.ox"]), static_cast<long long>(sim.ints["bc.map.oy"]),
+                        static_cast<long long>(sim.ints["bc.map.pox"]));
     }
+    std::printf("window changes while walking 40 tiles: %d\n", key_changes);
+    ext->on_action(inst, "zoom", 0); // close -> medium
+    sample_n(2);
+    std::printf("medium: key=%s\n", sim.texts["bc.map.key"].c_str());
+    save(sim.texts["bc.map.key"], "sim_medium");
+    ext->on_action(inst, "zoom", 0); // medium -> area
+    sample_n(2);
+    std::printf("area: akey=%s area=%lld mk=%lld,%lld\n", sim.texts["bc.map.akey"].c_str(),
+                static_cast<long long>(sim.ints["bc.map.area"]), static_cast<long long>(sim.ints["bc.mk.dx"]),
+                static_cast<long long>(sim.ints["bc.mk.dy"]));
+    save(sim.texts["bc.map.akey"], "sim_area");
+    std::printf("title '%s' key %s img %lld\n", sim.texts["bc.title"].c_str(), sim.texts["bc.title.key"].c_str(),
+                static_cast<long long>(sim.ints["bc.title.img"]));
+    save(sim.texts["bc.title.key"], "sim_title");
+    save("module:bc:player:70", "sim_player70");
+    // Into the main map, near (40, 40): close view.
+    ext->on_action(inst, "zoom", 0); // area -> close
+    sim.guest.Put<float>(sim.guest.explorer_ + 0x90, 40.0f);
+    sim.guest.Put<float>(sim.guest.explorer_ + 0x94, 40.0f);
+    sample_n(32); // the exploration walk runs twice a second
+    std::printf("main: key=%s title '%s' mk.dy=%lld lm.state=%lld\n", sim.texts["bc.map.key"].c_str(),
+                sim.texts["bc.title"].c_str(), static_cast<long long>(sim.ints["bc.mk.dy"]),
+                static_cast<long long>(sim.ints["bc.lm.state"]));
+    save(sim.texts["bc.map.key"], "sim_main_close");
+    save(sim.texts["bc.title.key"], "sim_main_title");
+    ext->on_action(inst, "zoom", 0);
+    ext->on_action(inst, "zoom", 0); // -> area
+    sample_n(2);
+    save(sim.texts["bc.map.akey"], "sim_main_area");
+    std::printf("main area: akey=%s mk=%lld,%lld\n", sim.texts["bc.map.akey"].c_str(),
+                static_cast<long long>(sim.ints["bc.mk.dx"]), static_cast<long long>(sim.ints["bc.mk.dy"]));
+    std::printf("lm log:\n%s\nrender ms %lld\n", sim.texts["bc.lm.log"].c_str(),
+                static_cast<long long>(sim.ints["bc.render.ms"]));
     std::printf("unknown action accepted: %u\n", ext->on_action(inst, "nope", 0));
     std::printf("bad key accepted: %u\n", ext->load_image(inst, &host, "module:bc:other", nullptr, Sink));
     api->destroy(inst);

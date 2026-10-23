@@ -14,7 +14,10 @@ DIM = "#FF9A8FB0"
 TEXT = "#FFE6E1F0"
 BG = "#FF0C0A10"
 
-MAP_TOP, MAP_H = 96, 888  # must match kMapTop / kMapH in 0100BA4026E94000.cpp
+# Player marker sizes per zoom level (the game draws it 5 world units tall; 7 and 14 px per
+# unit in the medium and close views, a fixed size in the whole-area view).
+MARKER = {"bc.mk.z0": 30, "bc.mk.z1": 35, "bc.mk.z2": 70}
+TITLE_W, TITLE_H = 1000, 150  # must match kTitleW / kTitleH in 0100BA4026E94000.cpp
 
 
 def label(rect, text=None, bind_text=None, scale=4, color=TEXT, **kw):
@@ -44,32 +47,38 @@ def rect(r, bg, **kw):
     return w
 
 
+def marker(bind, size):
+    return {"type": "image", "rect": [W // 2 - size // 2, H // 2 - size // 2, size, size],
+            "src": "module:bc:player:%d" % size, "x_bind": "bc.mk.dx", "y_bind": "bc.mk.dy",
+            "need_bind": bind}
+
+
 map_page = {
     "id": "map",
     "title": "Map",
     "widgets": [
-        rect([0, 0, W, 92], BAR),
-        label([24, 26, 860, 40], bind_text="bc.biome.label", scale=6, color=GOLD),
-        label([900, 34, 120, 30], text="ROOM", scale=4, color=DIM),
-        value([1040, 34, 180, 30], "bc.room.uid", scale=4, need_bind="bc.room.ok"),
-        {"type": "image", "rect": [0, MAP_TOP, W, MAP_H], "src_bind": "bc.map.key",
-         "need_bind": "bc.map.ready"},
-        label([40, 480, 1160, 40], text="READING MAP DATA...", scale=5, color=DIM,
+        rect([0, 0, W, H], BG),
+        # Follow view: the previous window stays underneath while the next one loads.
+        {"type": "image", "rect": [0, 0, 2048, 1536], "src_bind": "bc.map.pkey",
+         "x_bind": "bc.map.pox", "y_bind": "bc.map.poy", "need_bind": "bc.map.pshow"},
+        {"type": "image", "rect": [0, 0, 2048, 1536], "src_bind": "bc.map.key",
+         "x_bind": "bc.map.ox", "y_bind": "bc.map.oy", "need_bind": "bc.map.follow"},
+        # Whole-area view.
+        {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.map.akey",
+         "need_bind": "bc.map.area"},
+        # The game's player marker, centred; it only moves in the whole-area view.
+        *[marker(b, sz) for b, sz in MARKER.items()],
+        label([0, 520, W, 40], text="WAITING FOR THE GAME", scale=4, color=DIM, align="center",
               need_bind="!bc.map.ready"),
-        label([40, 540, 1160, 40], text="IF THIS STAYS, OPEN DEBUG", scale=4, color=DIM,
-              need_bind="!bc.map.ready"),
-        # Player marker: a white square with a red core, moved by the module.
-        rect([0, MAP_TOP, 32, 32], "#FFFFFFFF", x_bind="bc.mk.x", y_bind="bc.mk.y",
-             need_bind="bc.mk.show"),
-        rect([6, MAP_TOP + 6, 20, 20], "#FFE0402F", x_bind="bc.mk.x", y_bind="bc.mk.y",
-             need_bind="bc.mk.show"),
-        rect([0, 984, W, 96], BAR),
-        button(14, "ZOOM", "act_zoom"),
-        button(218, "FOG", "act_unexp"),
-        button(422, "- AREA", "act_prev"),
-        button(626, "AREA +", "act_next"),
-        button(830, "FOLLOW", "act_follow"),
-        button(1034, "DEBUG", "act_debug"),
+        # A tap anywhere changes the zoom.
+        rect([0, 0, W, H], "#00000000", on_tap="act_zoom"),
+        # Area and district names in the game's font (a plain label until the font is read).
+        {"type": "image", "rect": [24, 14, TITLE_W, TITLE_H], "src_bind": "bc.title.key",
+         "need_bind": "bc.title.img"},
+        label([36, 30, 900, 40], bind_text="bc.title", scale=5, color=GOLD,
+              need_bind="!bc.title.img"),
+        # Hold the title to open the debug page.
+        label([24, 14, 640, 110], text=" ", scale=5, color=GOLD, on_hold="act_debug", hold_ms=900),
     ],
 }
 
@@ -84,23 +93,23 @@ rows = [
     ("DATA SHIFT", "t", "bc.delta"),
     ("STATIC OFFSET", "i", "bc.sf"),
     ("SYSTEMS", "i", "bc.nsys"),
-    ("SYSTEM NAMES", "t3", "bc.systems"),
+    ("SYSTEM NAMES", "t2", "bc.systems"),
     ("CHUNK X Y", "ii", "bc.chunk.x", "bc.chunk.y"),
-    ("PREV CHUNK", "ii", "bc.prev.x", "bc.prev.y"),
-    ("CHUNK MODE", "i", "bc.chunk.mode"),
     ("ROOM UID  EX UID", "ii", "bc.room.uid", "bc.ex.uid"),
     ("ROOM POS", "ii", "bc.room.x", "bc.room.y"),
     ("WORLD", "t", "bc.room.world"),
     ("ROOM NAME", "t", "bc.room.inst"),
     ("ROOM ID", "t", "bc.room.id"),
     ("MAP POS X100", "iii", "bc.mm.x", "bc.mm.y", "bc.mm.z"),
-    ("FOG OK N MATCH", "iii", "bc.fog.ok", "bc.fog.n", "bc.fog.matched"),
+    ("FOG OK N MATCH ZONES", "iiii", "bc.fog.ok", "bc.fog.n", "bc.fog.matched", "bc.fog.zones"),
     ("FOG HERE", "t", "bc.fog.cur"),
-    ("FOG KEYS", "t2", "bc.fog.keys"),
+    ("FOG KEYS", "t", "bc.fog.keys"),
+    ("LAST SAVE", "t", "bc.save"),
     ("WORLD BIOMES ROOMS", "iii", "bc.world.ready", "bc.world.biomes", "bc.world.rooms"),
     ("WORLD LOG", "t2", "bc.world.log"),
-    ("ZOOM FOG FOLLOW", "iii", "bc.zoom", "bc.unexp", "bc.follow"),
-    ("SAMPLE US", "i", "bc.us"),
+    ("LEVEL MAP  LOAD MS  DRAW MS", "iii", "bc.lm.state", "bc.lm.ms", "bc.render.ms"),
+    ("LEVEL MAP LOG", "t3", "bc.lm.log"),
+    ("ZOOM  POS MODE  SAMPLE US", "iii", "bc.zoom", "bc.pos.mode", "bc.us"),
 ]
 
 debug_widgets = [
@@ -119,7 +128,7 @@ for row in rows:
         y += ROW * lines
     else:
         for i, b in enumerate(binds):
-            debug_widgets.append(value([420 + i * 220, y, 200, ROW], b, scale=3))
+            debug_widgets.append(value([420 + i * 200, y, 190, ROW], b, scale=3))
         y += ROW
 assert y < 984, y
 debug_widgets += [rect([0, 984, W, 96], BAR), button(14, "MAP", "act_map", w=300)]
@@ -130,8 +139,9 @@ manifest = {
     "name": "Belmonts Curse map",
     "min_runtime": 16,
     "requires_module": True,
-    "_note": "Castlevania: Belmont's Curse 1.1.0 (build 0F1169AA7D0FA452). The map is drawn by "
-             "the module from the player's own romfs; nothing from the game is shipped.",
+    "_note": "Castlevania: Belmont's Curse 1.1.0 (build 0F1169AA7D0FA452). The map, its icons "
+             "and the title font are read by the module from the player's own romfs; nothing "
+             "from the game is shipped.",
     "canvas_w": W,
     "canvas_h": H,
     "background": BG,
@@ -139,10 +149,6 @@ manifest = {
     "haptics": {"enabled": True, "respect_system": True, "tap": "light", "refused": "off"},
     "actions": {
         "act_zoom": {"kind": "module", "action": "zoom", "argument": 0},
-        "act_unexp": {"kind": "module", "action": "unexp", "argument": 0},
-        "act_prev": {"kind": "module", "action": "biome_prev", "argument": 0},
-        "act_next": {"kind": "module", "action": "biome_next", "argument": 0},
-        "act_follow": {"kind": "module", "action": "follow", "argument": 0},
         "act_debug": {"kind": "page", "page": "debug", "transition": "fade", "duration_ms": 150},
         "act_map": {"kind": "page", "page": "map", "transition": "fade", "duration_ms": 150},
     },

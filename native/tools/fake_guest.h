@@ -14,6 +14,10 @@ struct FakeGuest {
     std::uint64_t heap_next = 0x20000000;
     std::uint64_t main_base = 0x8000000;
     std::uint64_t main_size = 0x7400000;
+    std::uint64_t explorer_ = 0; // ExplorerComponent of the last Build, for moving the player
+    // The exploration dictionary of the last Build, for adding rooms.
+    std::uint64_t dict_entries_ = 0, dict_ = 0, kstring_ = 0, karray_ = 0, klist_ = 0, kstate_ = 0;
+    std::int32_t dict_count_ = 0;
 
     bool Read(std::uint64_t at, void* out, std::size_t n) const {
         auto it = regions.upper_bound(at);
@@ -88,7 +92,7 @@ struct FakeGuest {
                  std::int32_t pos_y = 15, std::int32_t chunk_x = 1, std::int32_t chunk_y = 0,
                  const std::string& world = "World_Biome_01_Streets_Poor",
                  std::vector<std::int32_t> states = {3, 2, 1, 0}, std::int32_t dims_w = 2,
-                 std::int32_t dims_h = 2) {
+                 std::int32_t dims_h = 2, float map_x = 1.5f, float map_y = -2.25f) {
         regions[main_base] = std::vector<std::uint8_t>(main_size + 0x100000, 0);
         const std::uint64_t data = main_base + static_cast<std::uint64_t>(delta);
         // Il2CppMetadataRegistration counts.
@@ -135,17 +139,23 @@ struct FakeGuest {
         Put<std::uint64_t>(ex + 0x60, ri);
 
         const std::uint64_t explorer = Obj(Klass("", "ExplorerComponent"), 0xB0);
-        Put<float>(explorer + 0x90, 1.5f);
-        Put<float>(explorer + 0x94, -2.25f);
+        Put<float>(explorer + 0x90, map_x);
+        Put<float>(explorer + 0x94, map_y);
+        explorer_ = explorer;
         Put<std::uint64_t>(ex + 0x48, explorer);
 
-        const std::uint64_t state = Obj(Klass("", "WorldRoomExplorationState"), 0x80);
+        kstring_ = kstring;
+        karray_ = karray;
+        klist_ = Klass("System.Collections.Generic", "List`1");
+        kstate_ = Klass("", "WorldRoomExplorationState");
+        const std::uint64_t state = Obj(kstate_, 0x80);
         Put<std::int32_t>(state + 0x10, dims_w);
         Put<std::int32_t>(state + 0x14, dims_h);
         Put<std::uint64_t>(state + 0x18, Array<std::int32_t>(karray, states));
-        // Dictionary<string, WorldRoomExplorationState>: one freed entry, one live entry.
-        const std::uint64_t entries = Obj(karray, 0x20 + 3 * 0x18);
-        Put<std::uint64_t>(entries + 0x18, 3);
+        // Dictionary<string, WorldRoomExplorationState>: one freed entry, one live entry, room
+        // for AddRoom.
+        const std::uint64_t entries = Obj(karray, 0x20 + 256 * 0x18);
+        Put<std::uint64_t>(entries + 0x18, 256);
         Put<std::int32_t>(entries + 0x20 + 0x18 + 0, 12345);
         Put<std::uint64_t>(entries + 0x20 + 0x18 + 8, String(kstring, "room-guid-" + std::to_string(uid)));
         Put<std::uint64_t>(entries + 0x20 + 0x18 + 16, state);
@@ -153,6 +163,9 @@ struct FakeGuest {
         Put<std::uint64_t>(dict + 0x18, entries);
         Put<std::int32_t>(dict + 0x20, 2);
         Put<std::uint64_t>(explorer + 0x30, dict);
+        dict_entries_ = entries;
+        dict_ = dict;
+        dict_count_ = 2;
 
         const std::uint64_t worlddata = Obj(Klass("MotherBase.RoomDesigner", "WorldData"), 0x58);
         const std::uint64_t list = Obj(Klass("System.Collections.Generic", "List`1"), 0x28);
@@ -162,4 +175,32 @@ struct FakeGuest {
         Put<std::uint64_t>(ex + 0x58, worlddata);
         return Expect{delta, chunk_x, chunk_y, uid, world, "room-guid-" + std::to_string(uid)};
     }
+
+    std::uint64_t IntList(const std::vector<std::int32_t>& v) {
+        const std::uint64_t list = Obj(klist_, 0x28);
+        Put<std::uint64_t>(list + 0x10, Array<std::int32_t>(karray_, v));
+        Put<std::int32_t>(list + 0x18, static_cast<std::int32_t>(v.size()));
+        return list;
+    }
+
+    /// Adds an exploration entry: `key` is the room id, with entered zones and Z-doors.
+    void AddRoom(const std::string& key, const std::vector<std::int32_t>& zones,
+                 const std::vector<std::int32_t>& zdoors = {}) {
+        if (dict_count_ >= 256)
+            return;
+        const std::uint64_t state = Obj(kstate_, 0x80);
+        Put<std::int32_t>(state + 0x10, 1);
+        Put<std::int32_t>(state + 0x14, 1);
+        Put<std::uint64_t>(state + 0x18, Array<std::int32_t>(karray_, {3}));
+        Put<std::uint64_t>(state + 0x38, IntList(zdoors));
+        Put<std::uint64_t>(state + 0x50, IntList(zones));
+        const std::uint64_t e = dict_entries_ + 0x20 + 0x18 * static_cast<std::uint64_t>(dict_count_);
+        Put<std::int32_t>(e, 1000 + dict_count_);
+        Put<std::uint64_t>(e + 8, String(kstring_, key));
+        Put<std::uint64_t>(e + 16, state);
+        ++dict_count_;
+        Put<std::int32_t>(dict_ + 0x20, dict_count_);
+    }
+
+    void SetLastSave(const std::string& room_id) { Put<std::uint64_t>(explorer_ + 0x88, String(kstring_, room_id)); }
 };

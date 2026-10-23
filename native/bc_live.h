@@ -19,7 +19,11 @@
 //   ExplorerComponent
 //     worldRoomExplorationStates Dictionary<string, WorldRoomExplorationState> +0x30
 //     lastMainMapPosition Vector3 +0x90
-//   WorldRoomExplorationState  roomDimensions Vector2Int +0x10, chunksExplorationState int[] +0x18
+//     lastUsedSaveRoomId string +0x88
+//   WorldRoomExplorationState  roomDimensions Vector2Int +0x10, chunksExplorationState int[] +0x18,
+//     discoveredZDoorExplorationZoneIDs List<int> +0x28, enteredZDoorIDs List<int> +0x38,
+//     discoveredSecretZones List<int> +0x48, enteredZonesIds List<int> +0x50,
+//     gpeSpecialActivated List<string> +0x58
 //
 // The data segment can sit at a constant shift from main_base + offset (NCE on Android); that
 // shift is learned once from Il2CppMetadataRegistration (main+0x6A95908), whose counts are fixed
@@ -43,10 +47,15 @@ struct Memory {
 };
 
 struct FogRoom {
-    std::string key;
+    std::string key;       // the room's id, e.g. "World_Biome_01_Streets_Poor_..._uid59"
     std::int32_t uid = -1; // resolved through the current world's room list, -1 if unknown
     std::int32_t w = 0, h = 0;
     std::vector<std::uint8_t> states;
+    std::vector<std::int32_t> entered_zones;          // exploration zones the player entered
+    std::vector<std::int32_t> entered_zdoors;         // Z-doors the player went through
+    std::vector<std::int32_t> discovered_zdoor_zones; // zones of Z-doors seen
+    std::vector<std::int32_t> discovered_secrets;     // secret zones found
+    std::vector<std::string> activated;               // GUIDs of activated gameplay elements
 };
 
 struct State {
@@ -69,6 +78,8 @@ struct State {
     bool ex_ok = false;
     std::int32_t ex_room_uid = -1;
     float map_x = 0, map_y = 0, map_z = 0;
+
+    std::string last_save_room; // id of the last save room used
 
     bool fog_ok = false;
     std::int32_t fog_entries = 0, fog_matched = 0;

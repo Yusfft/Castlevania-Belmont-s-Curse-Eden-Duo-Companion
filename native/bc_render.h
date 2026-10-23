@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Map raster for one biome: rooms drawn from their collision grids (open tiles filled, solid
-// tiles next to open ones drawn as the outline), with optional chunk fog.
+// Map raster for one biome, in the style of the game's own level map: explored rooms are a
+// dark, grained fill with a thin light outline; the edge of the explored part is drawn in
+// gold. Shapes come from the rooms' collision grids, interpolated between tile centres
+// (marching-squares style), so walls get chamfered corners instead of tile steps and the
+// outline stays a constant width at every zoom.
+//
+// Coordinates: Unity world units are tiles; world = room chunk origin * chunk size + local.
+// "Biome tiles" are world tiles shifted so the biome's lowest chunk corner is (0, 0); y is up.
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -20,35 +25,43 @@ struct Fog {
     std::unordered_map<std::int32_t, std::vector<std::uint8_t>> by_uid;
 };
 
+/// Pixels per tile at each zoom level; zoom 0 fits the whole biome instead.
+inline constexpr double kZoomScale[] = {0.0, 7.0, 14.0};
+inline constexpr int kZoomLevels = 3;
+
 struct Params {
-    int zoom = 0;            // 0 whole biome, 1 wide window, 2 close window
-    int center_cx = 0;       // window centre in biome chunks (zoom > 0)
-    int center_cy = 0;
-    int current_uid = -1;    // highlighted room
-    bool show_unexplored = false;
-    int out_w = 1240;
-    int out_h = 900;
+    int zoom = 2;           // 0 whole biome, 1 medium, 2 close
+    double center_x = 0;    // view centre in biome tiles (zoom > 0)
+    double center_y = 0;
+    int out_w = 2048;
+    int out_h = 1536;
 };
 
-/// Biome tile space: x right, y up, origin at the biome's (min_cx, min_cy) chunk corner.
 struct View {
-    double x0 = 0;    // tile x at the left edge
-    double y1 = 0;    // tile y at the top edge
+    double x0 = 0;    // biome tile x at the left edge
+    double y1 = 0;    // biome tile y at the top edge
     double scale = 1; // output px per tile
 };
 
 View ComputeView(const bc_world::Biome& biome, const Params& p);
 
-/// Output pixel of a biome-space tile coordinate.
 inline void TileToPixel(const View& v, double tx, double ty, double& px, double& py) {
     px = (tx - v.x0) * v.scale;
     py = (v.y1 - ty) * v.scale;
 }
 
-/// Straight RGBA8, out_w * out_h * 4 bytes, top row first.
+/// World position (Unity units) to biome tiles.
+inline void WorldToTile(const bc_world::Biome& b, double wx, double wy, double& tx, double& ty) {
+    tx = wx - static_cast<double>(b.min_cx) * b.chunk_w;
+    ty = wy - static_cast<double>(b.min_cy) * b.chunk_h;
+}
+
+/// Straight RGBA8, out_w * out_h * 4 bytes, top row first. Transparent outside the rooms.
 std::vector<std::uint8_t> Render(const bc_world::Biome& biome, const Fog& fog, const Params& p);
 
-/// Whether chunk `index` of room `uid` counts as explored under `fog`.
+/// The player marker: a gold ring around a deep blue disc, `size` x `size` RGBA.
+std::vector<std::uint8_t> RenderPlayerIcon(int size);
+
 bool ChunkExplored(const Fog& fog, std::int32_t uid, std::size_t index);
 
 } // namespace bc_render

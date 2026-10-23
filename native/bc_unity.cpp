@@ -3,6 +3,7 @@
 
 #include "bc_unity.h"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <unordered_map>
@@ -33,6 +34,7 @@ struct Cursor {
     std::size_t pos = 0;
     bool le = false;
     bool ok = true;
+    std::size_t base = 0; // absolute offset of p[0] in the file (alignment is absolute)
 
     bool Has(std::size_t k) const { return ok && pos <= n && k <= n - pos; }
     bool Skip(std::size_t k) {
@@ -44,7 +46,7 @@ struct Cursor {
         return true;
     }
     void Align(std::size_t a) {
-        const std::size_t aligned = (pos + (a - 1)) & ~(a - 1);
+        const std::size_t aligned = ((base + pos + (a - 1)) & ~(a - 1)) - base;
         if (aligned > n) {
             ok = false;
             return;
@@ -312,6 +314,215 @@ std::optional<std::pair<const u8*, std::size_t>> Bundle::NodeBytes(const BundleN
     return std::make_pair(data.data() + n.offset, static_cast<std::size_t>(n.size));
 }
 
+// --------------------------------------------------------------------------------- LazyBundle
+
+std::shared_ptr<LazyBundle> LazyBundle::Open(ReadAt read, std::uint64_t file_size, std::string* error) {
+    if (!read || file_size < 64) {
+        SetError(error, "no file");
+        return nullptr;
+    }
+    // Header: read a generous prefix; the block info follows it unless flagged at the end.
+    Bytes head(static_cast<std::size_t>(std::min<std::uint64_t>(file_size, 4096)));
+    if (read(0, head.data(), head.size()) != head.size()) {
+        SetError(error, "short read");
+        return nullptr;
+    }
+    Cursor c{head.data(), head.size(), 0, false, true};
+    const std::string sig = c.CStr(16);
+    if (!c.ok || sig != "UnityFS") {
+        SetError(error, "not a UnityFS bundle");
+        return nullptr;
+    }
+    const u32 format = c.U32();
+    c.CStr(64);
+    c.CStr(64);
+    const s64 total = c.S64();
+    const u32 cinfo = c.U32();
+    const u32 uinfo = c.U32();
+    const u32 flags = c.U32();
+    if (!c.ok || format < 6 || format > 8 || total <= 0 || cinfo > kMaxAlloc || uinfo > kMaxAlloc) {
+        SetError(error, "unsupported bundle header");
+        return nullptr;
+    }
+    if (format >= 7)
+        c.Align(16);
+    u64 info_off = 0;
+    if (flags & 0x80) {
+        if (cinfo > file_size) {
+            SetError(error, "block info out of range");
+            return nullptr;
+        }
+        info_off = file_size - cinfo;
+    } else {
+        info_off = c.pos;
+    }
+    Bytes cblock(cinfo);
+    if (read(info_off, cblock.data(), cblock.size()) != cblock.size()) {
+        SetError(error, "short block info read");
+        return nullptr;
+    }
+    u64 data_off = (flags & 0x80) ? c.pos : info_off + cinfo;
+    if (flags & 0x200)
+        data_off = (data_off + 15) & ~u64{15};
+    Bytes info(uinfo);
+    switch (flags & 0x3F) {
+    case 0:
+        if (cinfo != uinfo)
+            return nullptr;
+        info = cblock;
+        break;
+    case 2:
+    case 3:
+        if (!Lz4Decompress(cblock.data(), cinfo, info.data(), uinfo)) {
+            SetError(error, "block info LZ4 failed");
+            return nullptr;
+        }
+        break;
+    default:
+        SetError(error, "unsupported block info compression");
+        return nullptr;
+    }
+    auto b = std::make_shared<LazyBundle>();
+    b->read_ = std::move(read);
+    Cursor ic{info.data(), info.size(), 0, false, true};
+    ic.Skip(16);
+    const s32 block_count = ic.S32();
+    if (!ic.ok || block_count < 0 || block_count > 1 << 20) {
+        SetError(error, "bad block count");
+        return nullptr;
+    }
+    u64 coff = data_off, uoff = 0;
+    b->blocks_.resize(static_cast<std::size_t>(block_count));
+    for (auto& bl : b->blocks_) {
+        bl.usize = ic.U32();
+        bl.csize = ic.U32();
+        bl.flags = ic.U16();
+        bl.coff = coff;
+        bl.uoff = uoff;
+        coff += bl.csize;
+        uoff += bl.usize;
+    }
+    const s32 node_count = ic.S32();
+    if (!ic.ok || node_count < 0 || node_count > 4096 || coff > file_size) {
+        SetError(error, "bad node table");
+        return nullptr;
+    }
+    for (s32 i = 0; i < node_count; ++i) {
+        BundleNode node;
+        node.offset = ic.U64();
+        node.size = ic.U64();
+        node.flags = ic.U32();
+        node.path = ic.CStr(1024);
+        if (!ic.ok || node.offset > uoff || node.size > uoff - node.offset) {
+            SetError(error, "bad node");
+            return nullptr;
+        }
+        b->nodes_.push_back(std::move(node));
+    }
+    return b;
+}
+
+const BundleNode* LazyBundle::FindNode(std::string_view path) const {
+    for (const auto& n : nodes_) {
+        if (n.path == path)
+            return &n;
+        if (n.path.size() > path.size() && n.path.compare(n.path.size() - path.size(), path.size(), path) == 0 &&
+            n.path[n.path.size() - path.size() - 1] == '/')
+            return &n;
+    }
+    return nullptr;
+}
+
+bool LazyBundle::LoadBlock(std::size_t index, Bytes& out) {
+    const Block& bl = blocks_[index];
+    if (bl.usize > kMaxAlloc || bl.csize > kMaxAlloc)
+        return false;
+    Bytes src(bl.csize);
+    if (read_(bl.coff, src.data(), src.size()) != src.size())
+        return false;
+    out.resize(bl.usize);
+    switch (bl.flags & 0x3F) {
+    case 0:
+        if (bl.csize != bl.usize)
+            return false;
+        out = std::move(src);
+        return true;
+    case 2:
+    case 3:
+        return Lz4Decompress(src.data(), src.size(), out.data(), out.size());
+    default:
+        return false;
+    }
+}
+
+bool LazyBundle::Read(std::uint64_t offset, std::size_t size, std::uint8_t* out) {
+    if (size == 0)
+        return true;
+    if (blocks_.empty())
+        return false;
+    const u64 end = offset + size;
+    if (end < offset || end > blocks_.back().uoff + blocks_.back().usize)
+        return false;
+    // First block containing `offset`.
+    std::size_t lo = 0, hi = blocks_.size();
+    while (hi - lo > 1) {
+        const std::size_t mid = (lo + hi) / 2;
+        if (blocks_[mid].uoff <= offset)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    u64 pos = offset;
+    for (std::size_t i = lo; i < blocks_.size() && pos < end; ++i) {
+        const Block& bl = blocks_[i];
+        std::shared_ptr<Bytes> data;
+        {
+            std::lock_guard lock(mu_);
+            for (std::size_t k = 0; k < cache_.size(); ++k) {
+                if (cache_[k].first == i) {
+                    data = cache_[k].second;
+                    if (k) {
+                        auto e = cache_[k];
+                        cache_.erase(cache_.begin() + static_cast<std::ptrdiff_t>(k));
+                        cache_.insert(cache_.begin(), e);
+                    }
+                    break;
+                }
+            }
+        }
+        if (!data) {
+            auto fresh = std::make_shared<Bytes>();
+            if (!LoadBlock(i, *fresh))
+                return false;
+            data = fresh;
+            std::lock_guard lock(mu_);
+            cache_.insert(cache_.begin(), {i, data});
+            if (cache_.size() > 6)
+                cache_.pop_back();
+        }
+        const u64 from = pos - bl.uoff;
+        const u64 take = std::min<u64>(bl.usize - from, end - pos);
+        std::memcpy(out + (pos - offset), data->data() + from, static_cast<std::size_t>(take));
+        pos += take;
+    }
+    return pos == end;
+}
+
+bool LazyBundle::ReadNodeRange(const BundleNode& n, std::uint64_t offset, std::size_t size, std::uint8_t* out) {
+    if (offset > n.size || size > n.size - offset)
+        return false;
+    return Read(n.offset + offset, size, out);
+}
+
+std::optional<Bytes> LazyBundle::ReadNode(const BundleNode& n) {
+    if (n.size > kMaxAlloc)
+        return std::nullopt;
+    Bytes out(static_cast<std::size_t>(n.size));
+    if (!Read(n.offset, out.size(), out.data()))
+        return std::nullopt;
+    return out;
+}
+
 // -------------------------------------------------------------------------------------- Value
 
 const Value* Value::Get(std::string_view name) const {
@@ -436,9 +647,9 @@ bool ParseSerializedType(Cursor& c, u32 version, bool enable_tree, bool is_ref,
             return false;
         if (version >= 21) {
             if (is_ref) {
-                c.CStr(1024);
-                c.CStr(1024);
-                c.CStr(1024);
+                t.class_name = c.CStr(1024);
+                t.name_space = c.CStr(1024);
+                t.assembly = c.CStr(1024);
             } else {
                 const s32 deps = c.S32();
                 if (deps < 0 || deps > 1 << 20)
@@ -450,12 +661,15 @@ bool ParseSerializedType(Cursor& c, u32 version, bool enable_tree, bool is_ref,
     return c.ok;
 }
 
-// The type-tree walker. `stopped` is set when a ManagedReferencesRegistry field is reached;
-// everything read before it is returned.
+// The type-tree walker, following UnityPy's read_value. A ManagedReferencesRegistry is read when
+// the file carries the referenced types (SerializedFile v20+); a nested registry is skipped, as
+// UnityPy does. `stopped` is set when a registry cannot be read; everything before it is kept.
 struct Walker {
-    const std::vector<TypeTreeNode>& nodes;
+    using Tree = std::vector<TypeTreeNode>;
     Cursor& c;
+    const std::vector<SerializedType>* ref_types = nullptr;
     bool stopped = false;
+    bool in_registry = false;
     std::size_t budget = 4u * 1024u * 1024u; // max values created by one object read
 
     bool Spend() {
@@ -469,8 +683,8 @@ struct Walker {
 
     static bool Aligned(u32 meta) { return (meta & kAlignBytes) != 0; }
 
-    bool IsArrayNode(const TypeTreeNode& n) const {
-        return !n.children.empty() && nodes[n.children[0]].type == "Array";
+    static bool IsArrayNode(const Tree& t, const TypeTreeNode& n) {
+        return !n.children.empty() && t[n.children[0]].type == "Array";
     }
 
     // Reads one primitive / string / typeless value. Returns false when `n` is not one of them.
@@ -525,9 +739,53 @@ struct Walker {
         return true;
     }
 
+    const SerializedType* RefType(const Value& obj) const {
+        const Value* type = obj.Get("type");
+        if (!type || !ref_types)
+            return nullptr;
+        const Value* cls = type->Get("class");
+        const Value* ns = type->Get("ns");
+        const Value* asm_ = type->Get("asm");
+        if (!cls || cls->s.empty())
+            return nullptr;
+        for (const auto& rt : *ref_types) {
+            if (rt.class_name == cls->s && (!ns || rt.name_space == ns->s) && (!asm_ || rt.assembly == asm_->s))
+                return &rt;
+        }
+        return nullptr;
+    }
+
+    // One ReferencedObject: rid, type, then the data laid out by the referenced type.
+    void ReadReferencedObject(const Tree& t, const TypeTreeNode& n, Value& v) {
+        v.kind = Value::Kind::Object;
+        for (const u32 ci : n.children) {
+            const TypeTreeNode& child = t[ci];
+            if (child.type == "ReferencedObjectData") {
+                const Value* type = v.Get("type");
+                const Value* cls = type ? type->Get("class") : nullptr;
+                if (!cls || cls->s.empty())
+                    continue; // terminator entry: no data
+                const SerializedType* rt = RefType(v);
+                if (!rt || rt->nodes.empty()) {
+                    stopped = true; // cannot know the layout; keep what was read
+                    return;
+                }
+                v.keys.push_back(child.name);
+                v.list.emplace_back();
+                Read(rt->nodes, rt->nodes[0], v.list.back());
+            } else {
+                v.keys.push_back(child.name);
+                v.list.emplace_back();
+                Read(t, child, v.list.back());
+            }
+            if (!c.ok || stopped)
+                return;
+        }
+    }
+
     // UnityPy read_value. `own_align` false is used for elements read in bulk by ReadArrayBulk,
     // whose single trailing alignment is applied there instead.
-    void Read(const TypeTreeNode& n, Value& v, bool own_align = true) {
+    void Read(const Tree& t, const TypeTreeNode& n, Value& v, bool own_align = true) {
         if (!c.ok || stopped || !Spend())
             return;
         bool align = own_align && Aligned(n.meta_flag);
@@ -536,10 +794,12 @@ struct Walker {
         } else if (n.type == "pair" && n.children.size() >= 2) {
             v.kind = Value::Kind::List;
             v.list.resize(2);
-            Read(nodes[n.children[0]], v.list[0]);
-            Read(nodes[n.children[1]], v.list[1]);
-        } else if (IsArrayNode(n)) {
-            const TypeTreeNode& arr = nodes[n.children[0]];
+            Read(t, t[n.children[0]], v.list[0]);
+            Read(t, t[n.children[1]], v.list[1]);
+        } else if (n.type == "ReferencedObject") {
+            ReadReferencedObject(t, n, v);
+        } else if (IsArrayNode(t, n)) {
+            const TypeTreeNode& arr = t[n.children[0]];
             if (own_align && Aligned(arr.meta_flag))
                 align = true;
             const s32 size = c.S32();
@@ -548,14 +808,14 @@ struct Walker {
                 c.ok = false;
                 return;
             }
-            const TypeTreeNode& sub = nodes[arr.children[1]];
+            const TypeTreeNode& sub = t[arr.children[1]];
             v.kind = Value::Kind::List;
             if (Aligned(sub.meta_flag)) {
-                ReadArrayBulk(sub, static_cast<std::size_t>(size), v);
+                ReadArrayBulk(t, sub, static_cast<std::size_t>(size), v);
             } else {
                 v.list.resize(static_cast<std::size_t>(size));
                 for (auto& e : v.list) {
-                    Read(sub, e);
+                    Read(t, sub, e);
                     if (!c.ok || stopped)
                         break;
                 }
@@ -563,14 +823,19 @@ struct Walker {
         } else {
             v.kind = Value::Kind::Object;
             for (const u32 ci : n.children) {
-                const TypeTreeNode& child = nodes[ci];
+                const TypeTreeNode& child = t[ci];
                 if (child.type == "ManagedReferencesRegistry") {
-                    stopped = true;
-                    return;
+                    if (in_registry)
+                        continue; // nested registries are not serialized
+                    if (!ref_types) {
+                        stopped = true;
+                        return;
+                    }
+                    in_registry = true;
                 }
                 v.keys.push_back(child.name);
                 v.list.emplace_back();
-                Read(child, v.list.back());
+                Read(t, child, v.list.back());
                 if (!c.ok || stopped)
                     return;
             }
@@ -580,13 +845,13 @@ struct Walker {
     }
 
     // UnityPy read_value_array: `size` elements of an aligned element type, then one alignment.
-    void ReadArrayBulk(const TypeTreeNode& sub, std::size_t size, Value& v) {
+    void ReadArrayBulk(const Tree& t, const TypeTreeNode& sub, std::size_t size, Value& v) {
         v.list.resize(size);
         for (auto& e : v.list) {
-            if (IsArrayNode(sub)) {
+            if (IsArrayNode(t, sub)) {
                 // Nested vector inside a bulk array: each inner vector reads its own size and
                 // elements; alignment happens once at the end (UnityPy semantics).
-                const TypeTreeNode& arr = nodes[sub.children[0]];
+                const TypeTreeNode& arr = t[sub.children[0]];
                 const s32 inner = c.S32();
                 if (!c.ok || inner < 0 || arr.children.size() < 2 ||
                     static_cast<std::size_t>(inner) > c.n) {
@@ -594,16 +859,18 @@ struct Walker {
                     return;
                 }
                 e.kind = Value::Kind::List;
-                const TypeTreeNode& isub = nodes[arr.children[1]];
+                const TypeTreeNode& isub = t[arr.children[1]];
                 if (Aligned(isub.meta_flag)) {
-                    ReadArrayBulk(isub, static_cast<std::size_t>(inner), e);
+                    ReadArrayBulk(t, isub, static_cast<std::size_t>(inner), e);
                 } else {
                     e.list.resize(static_cast<std::size_t>(inner));
                     for (auto& ie : e.list)
-                        Read(isub, ie);
+                        Read(t, isub, ie);
                 }
+            } else if (sub.type == "ReferencedObject") {
+                ReadReferencedObject(t, sub, e);
             } else {
-                Read(sub, e, /*own_align=*/false);
+                Read(t, sub, e, /*own_align=*/false);
             }
             if (!c.ok || stopped)
                 return;
@@ -617,14 +884,59 @@ struct Walker {
 
 std::optional<SerializedFile> SerializedFile::Parse(const u8* data, std::size_t size,
                                                     std::string* error) {
-    if (size < 20) {
+    auto owned = std::make_shared<Bytes>(data, data + size);
+    ReadRange read = [owned](u64 off, std::size_t n, u8* out) {
+        if (off > owned->size() || n > owned->size() - off)
+            return false;
+        std::memcpy(out, owned->data() + off, n);
+        return true;
+    };
+    return Open(std::move(read), size, error);
+}
+
+std::optional<SerializedFile> SerializedFile::Open(ReadRange read, std::uint64_t size, std::string* error) {
+    if (size < 48 || !read) {
         SetError(error, "serialized file too small");
         return std::nullopt;
     }
+    // The header tells how much metadata follows it.
+    u8 head[48];
+    if (!read(0, sizeof head, head)) {
+        SetError(error, "serialized header unreadable");
+        return std::nullopt;
+    }
+    std::size_t meta_end = 0;
+    {
+        Cursor h{head, sizeof head, 0, false, true};
+        const u32 meta_size = h.U32();
+        h.U32();
+        const u32 version = h.U32();
+        h.U32();
+        const u8 endian = h.U8();
+        h.Skip(3);
+        u64 m = meta_size;
+        if (version >= 22) {
+            h.le = false;
+            m = h.U32();
+        }
+        (void)endian;
+        meta_end = static_cast<std::size_t>(std::min<u64>(size, m + 64));
+        if (!h.ok || meta_end > kMaxAlloc) {
+            SetError(error, "bad serialized header");
+            return std::nullopt;
+        }
+    }
+    Bytes meta(meta_end);
+    if (!read(0, meta.size(), meta.data())) {
+        SetError(error, "serialized metadata unreadable");
+        return std::nullopt;
+    }
     SerializedFile f;
-    auto owned = std::make_shared<Bytes>(data, data + size);
-    f.bytes_ = owned;
-    Cursor c{owned->data(), owned->size(), 0, false, true};
+    f.read_ = std::move(read);
+    f.file_size_ = size;
+    const u8* data = meta.data();
+    (void)data;
+    Cursor c{meta.data(), meta.size(), 0, false, true};
     c.U32(); // legacy metadata size
     c.U32(); // legacy file size
     f.version_ = c.U32();
@@ -641,7 +953,7 @@ std::optional<SerializedFile> SerializedFile::Parse(const u8* data, std::size_t 
         data_offset = c.U64(); // data offset
         c.S64();               // unknown
     }
-    if (!c.ok || data_offset > size) {
+    if (!c.ok || data_offset > f.file_size_) {
         SetError(error, "bad serialized header");
         return std::nullopt;
     }
@@ -703,32 +1015,137 @@ std::optional<SerializedFile> SerializedFile::Parse(const u8* data, std::size_t 
         }
         f.objects_.push_back(o);
     }
+    if (f.version_ >= 11) {
+        const s32 scripts = c.S32();
+        if (!c.ok || scripts < 0 || scripts > 1 << 20) {
+            SetError(error, "bad script table");
+            return std::nullopt;
+        }
+        for (s32 i = 0; i < scripts; ++i) {
+            c.S32(); // local file index
+            if (f.version_ >= 14) {
+                c.Align(4);
+                c.S64();
+            } else {
+                c.S32();
+            }
+        }
+    }
+    const s32 externals = c.S32();
+    if (!c.ok || externals < 0 || externals > 1 << 16) {
+        SetError(error, "bad externals table");
+        return std::nullopt;
+    }
+    for (s32 i = 0; i < externals; ++i) {
+        if (f.version_ >= 6)
+            c.CStr(1024); // temp empty
+        if (f.version_ >= 5) {
+            c.Skip(16); // guid
+            c.S32();    // type
+        }
+        f.externals_.push_back(c.CStr(1024));
+    }
+    if (f.version_ >= 20) {
+        const s32 ref_count = c.S32();
+        if (c.ok && ref_count >= 0 && ref_count <= 65536) {
+            f.ref_types_.resize(static_cast<std::size_t>(ref_count));
+            for (auto& t : f.ref_types_) {
+                if (!ParseSerializedType(c, f.version_, enable_tree, true, t)) {
+                    f.ref_types_.clear(); // registries then stop the object read, as before
+                    break;
+                }
+            }
+        }
+    }
+    if (!c.ok) {
+        SetError(error, "truncated serialized metadata");
+        return std::nullopt;
+    }
     return f;
+}
+
+const ObjectInfo* SerializedFile::Find(std::int64_t path_id) const {
+    if (index_.empty() && !objects_.empty()) {
+        index_.reserve(objects_.size());
+        for (std::size_t i = 0; i < objects_.size(); ++i)
+            index_.emplace(objects_[i].path_id, i);
+    }
+    const auto it = index_.find(path_id);
+    return it == index_.end() ? nullptr : &objects_[it->second];
+}
+
+bool SerializedFile::ReadObjectBytes(const ObjectInfo& obj, std::size_t limit, Bytes& out) const {
+    const u64 start = data_offset_ + obj.byte_start;
+    if (!read_ || start > file_size_ || obj.byte_size > file_size_ - start || obj.byte_size > kMaxAlloc)
+        return false;
+    out.resize(std::min<std::size_t>(obj.byte_size, limit));
+    return read_(start, out.size(), out.data());
 }
 
 std::optional<Value> SerializedFile::ReadObject(const ObjectInfo& obj, bool* truncated) const {
     if (truncated)
         *truncated = false;
-    if (!bytes_ || obj.type_index < 0 || static_cast<std::size_t>(obj.type_index) >= types_.size())
+    if (obj.type_index < 0 || static_cast<std::size_t>(obj.type_index) >= types_.size())
         return std::nullopt;
     const auto& type = types_[static_cast<std::size_t>(obj.type_index)];
     if (type.nodes.empty())
         return std::nullopt;
-    const u64 start = data_offset_ + obj.byte_start;
-    if (start > bytes_->size() || obj.byte_size > bytes_->size() - start)
+    Bytes buf;
+    if (!ReadObjectBytes(obj, obj.byte_size, buf))
         return std::nullopt;
-    // UnityPy aligns relative to the start of the file, so the cursor spans the file from its
-    // first byte and stops at the object's end; alignment then matches exactly.
-    Cursor c{bytes_->data(), static_cast<std::size_t>(start + obj.byte_size),
-             static_cast<std::size_t>(start), little_endian_, true};
-    Walker w{type.nodes, c};
+    // UnityPy aligns relative to the start of the file: the cursor carries the absolute base.
+    Cursor c{buf.data(), buf.size(), 0, little_endian_, true};
+    c.base = static_cast<std::size_t>(data_offset_ + obj.byte_start);
+    Walker w{c};
+    w.ref_types = ref_types_.empty() ? nullptr : &ref_types_;
     Value v;
-    w.Read(type.nodes[0], v);
+    w.Read(type.nodes, type.nodes[0], v);
     if (!c.ok)
         return std::nullopt;
     if (truncated)
         *truncated = w.stopped;
     return v;
+}
+
+const SerializedType* SerializedFile::TypeOf(const ObjectInfo& obj) const {
+    if (obj.type_index < 0 || static_cast<std::size_t>(obj.type_index) >= types_.size())
+        return nullptr;
+    return &types_[static_cast<std::size_t>(obj.type_index)];
+}
+
+bool SerializedFile::HasField(const SerializedType& type, std::string_view name) {
+    if (type.nodes.empty())
+        return false;
+    for (const u32 ci : type.nodes[0].children) {
+        if (ci < type.nodes.size() && type.nodes[ci].name == name)
+            return true;
+    }
+    return false;
+}
+
+std::string SerializedFile::PeekName(const ObjectInfo& obj) const {
+    const SerializedType* type = TypeOf(obj);
+    if (!type || type->nodes.empty())
+        return {};
+    Bytes buf;
+    if (!ReadObjectBytes(obj, 1024, buf))
+        return {};
+    Cursor c{buf.data(), buf.size(), 0, little_endian_, true};
+    c.base = static_cast<std::size_t>(data_offset_ + obj.byte_start);
+    Walker w{c};
+    w.budget = 4096;
+    for (const u32 ci : type->nodes[0].children) {
+        if (ci >= type->nodes.size())
+            return {};
+        const TypeTreeNode& child = type->nodes[ci];
+        Value v;
+        w.Read(type->nodes, child, v);
+        if (!c.ok || w.stopped)
+            return {};
+        if (child.name == "m_Name")
+            return v.kind == Value::Kind::String ? v.s : std::string{};
+    }
+    return {};
 }
 
 } // namespace bc_unity

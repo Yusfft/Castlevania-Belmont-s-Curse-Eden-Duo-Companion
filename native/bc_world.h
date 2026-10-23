@@ -29,7 +29,7 @@ struct Chunk {
 
 struct Room {
     std::int32_t uid = -1;            // runtimeRoomNumber
-    std::int32_t pos_x = 0, pos_y = 0; // positionCoord, in chunks
+    std::int32_t pos_x = 0, pos_y = 0; // positionCoord + editionOffsetCoord, in chunks
     std::int32_t w = 0, h = 0;         // size in chunks
     std::int32_t chunk_w = 0, chunk_h = 0;
     std::string name;  // RoomData m_Name

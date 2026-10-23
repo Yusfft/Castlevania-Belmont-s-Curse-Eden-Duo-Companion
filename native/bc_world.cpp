@@ -145,6 +145,13 @@ std::optional<Biome> LoadBiome(const std::vector<std::uint8_t>& bytes, std::stri
         const Value& rd = rd_it->second;
         if (const Value* n = rd.Get("m_Name"))
             room.name = n->s;
+        // The chunk grid starts at positionCoord + editionOffsetCoord: with the offset every
+        // room's ZDoor world position (zDoorIdData.positionID) matches its chunk-local position,
+        // and no two rooms of a biome share a chunk; without it 47 chunks overlap.
+        if (const Value* eo = rd.Get("editionOffsetCoord")) {
+            room.pos_x += static_cast<std::int32_t>(Int(eo->Get("x")));
+            room.pos_y += static_cast<std::int32_t>(Int(eo->Get("y")));
+        }
         room.w = static_cast<std::int32_t>(Int(rd.Get("_width")));
         room.h = static_cast<std::int32_t>(Int(rd.Get("_height")));
         if (const Value* cs = rd.Get("chunkSize")) {

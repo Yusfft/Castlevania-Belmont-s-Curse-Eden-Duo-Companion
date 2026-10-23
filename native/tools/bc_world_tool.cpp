@@ -75,15 +75,16 @@ int main(int argc, char** argv) {
         bc_render::Fog fog; // unknown: draw everything
         bc_render::Params p;
         p.zoom = 0;
-        p.current_uid = b.rooms.front().uid;
+        p.out_w = 1240;
+        p.out_h = 1080;
         const auto r0 = std::chrono::steady_clock::now();
         auto img = bc_render::Render(b, fog, p);
         const auto r1 = std::chrono::steady_clock::now();
-        std::fprintf(stderr, "%s: bbox %d..%d x %d..%d, render %.1f ms\n", b.world_name.c_str(),
+        std::fprintf(stderr, "%s: bbox %d..%d x %d..%d, render z0 %.1f ms\n", b.world_name.c_str(),
                      b.min_cx, b.max_cx, b.min_cy, b.max_cy,
                      std::chrono::duration<double, std::milli>(r1 - r0).count());
         WritePpm(out + "/" + b.world_name + "_z0.ppm", img, p.out_w, p.out_h);
-        // A close view centred on the first save room (or the first room).
+        // Close and medium views centred on the first save room (or the first room).
         const bc_world::Room* focus = &b.rooms.front();
         for (const auto& r : b.rooms) {
             if (r.save_room) {
@@ -91,12 +92,18 @@ int main(int argc, char** argv) {
                 break;
             }
         }
-        p.zoom = 2;
-        p.center_cx = focus->pos_x;
-        p.center_cy = focus->pos_y;
-        p.current_uid = focus->uid;
-        img = bc_render::Render(b, fog, p);
-        WritePpm(out + "/" + b.world_name + "_z2.ppm", img, p.out_w, p.out_h);
+        for (int z = 1; z <= 2; ++z) {
+            p.zoom = z;
+            p.out_w = 2048;
+            p.out_h = 1536;
+            p.center_x = (focus->pos_x - b.min_cx + 0.5) * b.chunk_w;
+            p.center_y = (focus->pos_y - b.min_cy + 0.5) * b.chunk_h;
+            const auto t2 = std::chrono::steady_clock::now();
+            img = bc_render::Render(b, fog, p);
+            const auto t3 = std::chrono::steady_clock::now();
+            std::fprintf(stderr, "   z%d %.1f ms\n", z, std::chrono::duration<double, std::milli>(t3 - t2).count());
+            WritePpm(out + "/" + b.world_name + "_z" + std::to_string(z) + ".ppm", img, p.out_w, p.out_h);
+        }
     }
     return 0;
 }

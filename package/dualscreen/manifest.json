@@ -4,7 +4,7 @@
  "name": "Belmonts Curse map",
  "min_runtime": 16,
  "requires_module": true,
- "_note": "Castlevania: Belmont's Curse 1.1.0 (build 0F1169AA7D0FA452). The map is drawn by the module from the player's own romfs; nothing from the game is shipped.",
+ "_note": "Castlevania: Belmont's Curse 1.1.0 (build 0F1169AA7D0FA452). The map, its icons and the title font are read by the module from the player's own romfs; nothing from the game is shipped.",
  "canvas_w": 1240,
  "canvas_h": 1080,
  "background": "#FF0C0A10",
@@ -19,26 +19,6 @@
   "act_zoom": {
    "kind": "module",
    "action": "zoom",
-   "argument": 0
-  },
-  "act_unexp": {
-   "kind": "module",
-   "action": "unexp",
-   "argument": 0
-  },
-  "act_prev": {
-   "kind": "module",
-   "action": "biome_prev",
-   "argument": 0
-  },
-  "act_next": {
-   "kind": "module",
-   "action": "biome_next",
-   "argument": 0
-  },
-  "act_follow": {
-   "kind": "module",
-   "action": "follow",
    "argument": 0
   },
   "act_debug": {
@@ -68,217 +48,152 @@
       0,
       0,
       1240,
-      92
+      1080
      ],
-     "bg": "#FF16121E",
+     "bg": "#FF0C0A10",
      "color": "#00000000",
      "frame": 0
-    },
-    {
-     "type": "label",
-     "rect": [
-      24,
-      26,
-      860,
-      40
-     ],
-     "text_scale": 6,
-     "color": "#FFE9C46A",
-     "bind_text": "bc.biome.label"
-    },
-    {
-     "type": "label",
-     "rect": [
-      900,
-      34,
-      120,
-      30
-     ],
-     "text_scale": 4,
-     "color": "#FF9A8FB0",
-     "text": "ROOM"
-    },
-    {
-     "type": "value",
-     "rect": [
-      1040,
-      34,
-      180,
-      30
-     ],
-     "bind": "bc.room.uid",
-     "text_scale": 4,
-     "color": "#FFE6E1F0",
-     "need_bind": "bc.room.ok"
     },
     {
      "type": "image",
      "rect": [
       0,
-      96,
-      1240,
-      888
+      0,
+      2048,
+      1536
+     ],
+     "src_bind": "bc.map.pkey",
+     "x_bind": "bc.map.pox",
+     "y_bind": "bc.map.poy",
+     "need_bind": "bc.map.pshow"
+    },
+    {
+     "type": "image",
+     "rect": [
+      0,
+      0,
+      2048,
+      1536
      ],
      "src_bind": "bc.map.key",
-     "need_bind": "bc.map.ready"
+     "x_bind": "bc.map.ox",
+     "y_bind": "bc.map.oy",
+     "need_bind": "bc.map.follow"
     },
     {
-     "type": "label",
+     "type": "image",
      "rect": [
-      40,
-      480,
-      1160,
-      40
+      0,
+      0,
+      1240,
+      1080
      ],
-     "text_scale": 5,
-     "color": "#FF9A8FB0",
-     "text": "READING MAP DATA...",
-     "need_bind": "!bc.map.ready"
+     "src_bind": "bc.map.akey",
+     "need_bind": "bc.map.area"
+    },
+    {
+     "type": "image",
+     "rect": [
+      605,
+      525,
+      30,
+      30
+     ],
+     "src": "module:bc:player:30",
+     "x_bind": "bc.mk.dx",
+     "y_bind": "bc.mk.dy",
+     "need_bind": "bc.mk.z0"
+    },
+    {
+     "type": "image",
+     "rect": [
+      603,
+      523,
+      35,
+      35
+     ],
+     "src": "module:bc:player:35",
+     "x_bind": "bc.mk.dx",
+     "y_bind": "bc.mk.dy",
+     "need_bind": "bc.mk.z1"
+    },
+    {
+     "type": "image",
+     "rect": [
+      585,
+      505,
+      70,
+      70
+     ],
+     "src": "module:bc:player:70",
+     "x_bind": "bc.mk.dx",
+     "y_bind": "bc.mk.dy",
+     "need_bind": "bc.mk.z2"
     },
     {
      "type": "label",
      "rect": [
-      40,
-      540,
-      1160,
+      0,
+      520,
+      1240,
       40
      ],
      "text_scale": 4,
      "color": "#FF9A8FB0",
-     "text": "IF THIS STAYS, OPEN DEBUG",
+     "text": "WAITING FOR THE GAME",
+     "align": "center",
      "need_bind": "!bc.map.ready"
     },
     {
      "type": "rect",
      "rect": [
       0,
-      96,
-      32,
-      32
-     ],
-     "bg": "#FFFFFFFF",
-     "color": "#00000000",
-     "frame": 0,
-     "x_bind": "bc.mk.x",
-     "y_bind": "bc.mk.y",
-     "need_bind": "bc.mk.show"
-    },
-    {
-     "type": "rect",
-     "rect": [
-      6,
-      102,
-      20,
-      20
-     ],
-     "bg": "#FFE0402F",
-     "color": "#00000000",
-     "frame": 0,
-     "x_bind": "bc.mk.x",
-     "y_bind": "bc.mk.y",
-     "need_bind": "bc.mk.show"
-    },
-    {
-     "type": "rect",
-     "rect": [
       0,
-      984,
       1240,
-      96
+      1080
      ],
-     "bg": "#FF16121E",
+     "bg": "#00000000",
      "color": "#00000000",
-     "frame": 0
+     "frame": 0,
+     "on_tap": "act_zoom"
     },
     {
-     "type": "button",
+     "type": "image",
      "rect": [
+      24,
       14,
-      996,
-      192,
-      72
+      1000,
+      150
      ],
-     "text": "ZOOM",
-     "on_tap": "act_zoom",
-     "text_scale": 5,
-     "color": "#FFE6E1F0",
-     "bg": "#FF2A2238",
-     "border": 3
+     "src_bind": "bc.title.key",
+     "need_bind": "bc.title.img"
     },
     {
-     "type": "button",
+     "type": "label",
      "rect": [
-      218,
-      996,
-      192,
-      72
+      36,
+      30,
+      900,
+      40
      ],
-     "text": "FOG",
-     "on_tap": "act_unexp",
      "text_scale": 5,
-     "color": "#FFE6E1F0",
-     "bg": "#FF2A2238",
-     "border": 3
+     "color": "#FFE9C46A",
+     "bind_text": "bc.title",
+     "need_bind": "!bc.title.img"
     },
     {
-     "type": "button",
+     "type": "label",
      "rect": [
-      422,
-      996,
-      192,
-      72
+      24,
+      14,
+      640,
+      110
      ],
-     "text": "- AREA",
-     "on_tap": "act_prev",
      "text_scale": 5,
-     "color": "#FFE6E1F0",
-     "bg": "#FF2A2238",
-     "border": 3
-    },
-    {
-     "type": "button",
-     "rect": [
-      626,
-      996,
-      192,
-      72
-     ],
-     "text": "AREA +",
-     "on_tap": "act_next",
-     "text_scale": 5,
-     "color": "#FFE6E1F0",
-     "bg": "#FF2A2238",
-     "border": 3
-    },
-    {
-     "type": "button",
-     "rect": [
-      830,
-      996,
-      192,
-      72
-     ],
-     "text": "FOLLOW",
-     "on_tap": "act_follow",
-     "text_scale": 5,
-     "color": "#FFE6E1F0",
-     "bg": "#FF2A2238",
-     "border": 3
-    },
-    {
-     "type": "button",
-     "rect": [
-      1034,
-      996,
-      192,
-      72
-     ],
-     "text": "DEBUG",
-     "on_tap": "act_debug",
-     "text_scale": 5,
-     "color": "#FFE6E1F0",
-     "bg": "#FF2A2238",
-     "border": 3
+     "color": "#FFE9C46A",
+     "text": " ",
+     "on_hold": "act_debug",
+     "hold_ms": 900
     }
    ]
   },
@@ -353,7 +268,7 @@
      "rect": [
       420,
       113,
-      200,
+      190,
       29
      ],
      "bind": "module_ready",
@@ -403,7 +318,7 @@
      "rect": [
       420,
       171,
-      200,
+      190,
       29
      ],
      "bind": "build_match",
@@ -427,7 +342,7 @@
      "rect": [
       420,
       200,
-      200,
+      190,
       29
      ],
      "bind": "bc.stage",
@@ -503,7 +418,7 @@
      "rect": [
       420,
       287,
-      200,
+      190,
       29
      ],
      "bind": "bc.sf",
@@ -527,7 +442,7 @@
      "rect": [
       420,
       316,
-      200,
+      190,
       29
      ],
      "bind": "bc.nsys",
@@ -552,19 +467,19 @@
       420,
       345,
       800,
-      87
+      58
      ],
      "text_scale": 3,
      "color": "#FFE6E1F0",
      "bind_text": "bc.systems",
      "wrap_width": 800,
-     "max_lines": 3
+     "max_lines": 2
     },
     {
      "type": "label",
      "rect": [
       24,
-      432,
+      403,
       380,
       29
      ],
@@ -576,8 +491,8 @@
      "type": "value",
      "rect": [
       420,
-      432,
-      200,
+      403,
+      190,
       29
      ],
      "bind": "bc.chunk.x",
@@ -587,9 +502,9 @@
     {
      "type": "value",
      "rect": [
-      640,
-      432,
-      200,
+      620,
+      403,
+      190,
       29
      ],
      "bind": "bc.chunk.y",
@@ -600,67 +515,7 @@
      "type": "label",
      "rect": [
       24,
-      461,
-      380,
-      29
-     ],
-     "text_scale": 3,
-     "color": "#FF9A8FB0",
-     "text": "PREV CHUNK"
-    },
-    {
-     "type": "value",
-     "rect": [
-      420,
-      461,
-      200,
-      29
-     ],
-     "bind": "bc.prev.x",
-     "text_scale": 3,
-     "color": "#FFE6E1F0"
-    },
-    {
-     "type": "value",
-     "rect": [
-      640,
-      461,
-      200,
-      29
-     ],
-     "bind": "bc.prev.y",
-     "text_scale": 3,
-     "color": "#FFE6E1F0"
-    },
-    {
-     "type": "label",
-     "rect": [
-      24,
-      490,
-      380,
-      29
-     ],
-     "text_scale": 3,
-     "color": "#FF9A8FB0",
-     "text": "CHUNK MODE"
-    },
-    {
-     "type": "value",
-     "rect": [
-      420,
-      490,
-      200,
-      29
-     ],
-     "bind": "bc.chunk.mode",
-     "text_scale": 3,
-     "color": "#FFE6E1F0"
-    },
-    {
-     "type": "label",
-     "rect": [
-      24,
-      519,
+      432,
       380,
       29
      ],
@@ -672,8 +527,8 @@
      "type": "value",
      "rect": [
       420,
-      519,
-      200,
+      432,
+      190,
       29
      ],
      "bind": "bc.room.uid",
@@ -683,9 +538,9 @@
     {
      "type": "value",
      "rect": [
-      640,
-      519,
-      200,
+      620,
+      432,
+      190,
       29
      ],
      "bind": "bc.ex.uid",
@@ -696,7 +551,7 @@
      "type": "label",
      "rect": [
       24,
-      548,
+      461,
       380,
       29
      ],
@@ -708,8 +563,8 @@
      "type": "value",
      "rect": [
       420,
-      548,
-      200,
+      461,
+      190,
       29
      ],
      "bind": "bc.room.x",
@@ -719,9 +574,9 @@
     {
      "type": "value",
      "rect": [
-      640,
-      548,
-      200,
+      620,
+      461,
+      190,
       29
      ],
      "bind": "bc.room.y",
@@ -732,7 +587,7 @@
      "type": "label",
      "rect": [
       24,
-      577,
+      490,
       380,
       29
      ],
@@ -744,7 +599,7 @@
      "type": "label",
      "rect": [
       420,
-      577,
+      490,
       800,
       29
      ],
@@ -758,7 +613,7 @@
      "type": "label",
      "rect": [
       24,
-      606,
+      519,
       380,
       29
      ],
@@ -770,7 +625,7 @@
      "type": "label",
      "rect": [
       420,
-      606,
+      519,
       800,
       29
      ],
@@ -784,7 +639,7 @@
      "type": "label",
      "rect": [
       24,
-      635,
+      548,
       380,
       29
      ],
@@ -796,7 +651,7 @@
      "type": "label",
      "rect": [
       420,
-      635,
+      548,
       800,
       29
      ],
@@ -810,7 +665,7 @@
      "type": "label",
      "rect": [
       24,
-      664,
+      577,
       380,
       29
      ],
@@ -822,8 +677,8 @@
      "type": "value",
      "rect": [
       420,
-      664,
-      200,
+      577,
+      190,
       29
      ],
      "bind": "bc.mm.x",
@@ -833,9 +688,9 @@
     {
      "type": "value",
      "rect": [
-      640,
-      664,
-      200,
+      620,
+      577,
+      190,
       29
      ],
      "bind": "bc.mm.y",
@@ -845,9 +700,9 @@
     {
      "type": "value",
      "rect": [
-      860,
-      664,
-      200,
+      820,
+      577,
+      190,
       29
      ],
      "bind": "bc.mm.z",
@@ -858,20 +713,20 @@
      "type": "label",
      "rect": [
       24,
-      693,
+      606,
       380,
       29
      ],
      "text_scale": 3,
      "color": "#FF9A8FB0",
-     "text": "FOG OK N MATCH"
+     "text": "FOG OK N MATCH ZONES"
     },
     {
      "type": "value",
      "rect": [
       420,
-      693,
-      200,
+      606,
+      190,
       29
      ],
      "bind": "bc.fog.ok",
@@ -881,9 +736,9 @@
     {
      "type": "value",
      "rect": [
-      640,
-      693,
-      200,
+      620,
+      606,
+      190,
       29
      ],
      "bind": "bc.fog.n",
@@ -893,9 +748,9 @@
     {
      "type": "value",
      "rect": [
-      860,
-      693,
-      200,
+      820,
+      606,
+      190,
       29
      ],
      "bind": "bc.fog.matched",
@@ -903,10 +758,22 @@
      "color": "#FFE6E1F0"
     },
     {
+     "type": "value",
+     "rect": [
+      1020,
+      606,
+      190,
+      29
+     ],
+     "bind": "bc.fog.zones",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
      "type": "label",
      "rect": [
       24,
-      722,
+      635,
       380,
       29
      ],
@@ -918,7 +785,7 @@
      "type": "label",
      "rect": [
       420,
-      722,
+      635,
       800,
       29
      ],
@@ -932,7 +799,7 @@
      "type": "label",
      "rect": [
       24,
-      751,
+      664,
       380,
       29
      ],
@@ -944,21 +811,47 @@
      "type": "label",
      "rect": [
       420,
-      751,
+      664,
       800,
-      58
+      29
      ],
      "text_scale": 3,
      "color": "#FFE6E1F0",
      "bind_text": "bc.fog.keys",
      "wrap_width": 800,
-     "max_lines": 2
+     "max_lines": 1
     },
     {
      "type": "label",
      "rect": [
       24,
-      809,
+      693,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "LAST SAVE"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      693,
+      800,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.save",
+     "wrap_width": 800,
+     "max_lines": 1
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      722,
       380,
       29
      ],
@@ -970,8 +863,8 @@
      "type": "value",
      "rect": [
       420,
-      809,
-      200,
+      722,
+      190,
       29
      ],
      "bind": "bc.world.ready",
@@ -981,9 +874,9 @@
     {
      "type": "value",
      "rect": [
-      640,
-      809,
-      200,
+      620,
+      722,
+      190,
       29
      ],
      "bind": "bc.world.biomes",
@@ -993,9 +886,9 @@
     {
      "type": "value",
      "rect": [
-      860,
-      809,
-      200,
+      820,
+      722,
+      190,
       29
      ],
      "bind": "bc.world.rooms",
@@ -1006,7 +899,7 @@
      "type": "label",
      "rect": [
       24,
-      838,
+      751,
       380,
       29
      ],
@@ -1018,7 +911,7 @@
      "type": "label",
      "rect": [
       420,
-      838,
+      751,
       800,
       58
      ],
@@ -1032,49 +925,75 @@
      "type": "label",
      "rect": [
       24,
-      896,
+      809,
       380,
       29
      ],
      "text_scale": 3,
      "color": "#FF9A8FB0",
-     "text": "ZOOM FOG FOLLOW"
+     "text": "LEVEL MAP  LOAD MS  DRAW MS"
     },
     {
      "type": "value",
      "rect": [
       420,
-      896,
-      200,
+      809,
+      190,
       29
      ],
-     "bind": "bc.zoom",
+     "bind": "bc.lm.state",
      "text_scale": 3,
      "color": "#FFE6E1F0"
     },
     {
      "type": "value",
      "rect": [
-      640,
-      896,
-      200,
+      620,
+      809,
+      190,
       29
      ],
-     "bind": "bc.unexp",
+     "bind": "bc.lm.ms",
      "text_scale": 3,
      "color": "#FFE6E1F0"
     },
     {
      "type": "value",
      "rect": [
-      860,
-      896,
-      200,
+      820,
+      809,
+      190,
       29
      ],
-     "bind": "bc.follow",
+     "bind": "bc.render.ms",
      "text_scale": 3,
      "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      838,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
+     "text": "LEVEL MAP LOG"
+    },
+    {
+     "type": "label",
+     "rect": [
+      420,
+      838,
+      800,
+      87
+     ],
+     "text_scale": 3,
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.lm.log",
+     "wrap_width": 800,
+     "max_lines": 3
     },
     {
      "type": "label",
@@ -1086,14 +1005,38 @@
      ],
      "text_scale": 3,
      "color": "#FF9A8FB0",
-     "text": "SAMPLE US"
+     "text": "ZOOM  POS MODE  SAMPLE US"
     },
     {
      "type": "value",
      "rect": [
       420,
       925,
-      200,
+      190,
+      29
+     ],
+     "bind": "bc.zoom",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      620,
+      925,
+      190,
+      29
+     ],
+     "bind": "bc.pos.mode",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      820,
+      925,
+      190,
       29
      ],
      "bind": "bc.us",

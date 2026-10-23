@@ -23,10 +23,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <mutex>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -61,6 +64,41 @@ struct Bundle {
     std::optional<std::pair<const std::uint8_t*, std::size_t>> NodeBytes(const BundleNode& n) const;
 };
 
+/// Random access to a file: copies up to `size` bytes at `offset`, returns the count copied.
+using ReadAt = std::function<std::size_t(std::uint64_t offset, void* out, std::size_t size)>;
+
+/// A UnityFS bundle read on demand: only the header and block table are loaded; data blocks
+/// are fetched and decompressed when a range is asked for (a few recent blocks are cached).
+/// Thread safe.
+class LazyBundle {
+public:
+    static std::shared_ptr<LazyBundle> Open(ReadAt read, std::uint64_t file_size,
+                                            std::string* error = nullptr);
+
+    const std::vector<BundleNode>& Nodes() const { return nodes_; }
+    /// The node whose path equals `path` (e.g. "CAB-1234..."), or ends with "/" + path.
+    const BundleNode* FindNode(std::string_view path) const;
+    /// Copies [offset, offset + size) of the uncompressed stream.
+    bool Read(std::uint64_t offset, std::size_t size, std::uint8_t* out);
+    /// Reads a range of one node.
+    bool ReadNodeRange(const BundleNode& n, std::uint64_t offset, std::size_t size, std::uint8_t* out);
+    std::optional<Bytes> ReadNode(const BundleNode& n);
+
+private:
+    struct Block {
+        std::uint64_t coff = 0, uoff = 0;
+        std::uint32_t csize = 0, usize = 0;
+        std::uint16_t flags = 0;
+    };
+    bool LoadBlock(std::size_t index, Bytes& out);
+
+    ReadAt read_;
+    std::vector<Block> blocks_;
+    std::vector<BundleNode> nodes_;
+    std::mutex mu_;
+    std::vector<std::pair<std::size_t, std::shared_ptr<Bytes>>> cache_; // most recent first
+};
+
 /// A type-tree value. Kinds mirror what UnityPy produces.
 struct Value {
     enum class Kind : std::uint8_t { Null, Int, Float, String, Bytes, List, Object };
@@ -90,6 +128,8 @@ struct SerializedType {
     std::int32_t class_id = 0;
     std::int16_t script_type_index = -1;
     std::vector<TypeTreeNode> nodes; // nodes[0] is the root when present
+    // Referenced (SerializeReference) types only.
+    std::string class_name, name_space, assembly;
 };
 
 struct ObjectInfo {
@@ -102,27 +142,49 @@ struct ObjectInfo {
 
 class SerializedFile {
 public:
+    /// Reads `size` bytes at `offset` of the serialized file; false when out of range.
+    using ReadRange = std::function<bool(std::uint64_t offset, std::size_t size, std::uint8_t* out)>;
+
+    /// Parses a serialized file held in memory (the bytes are copied).
     static std::optional<SerializedFile> Parse(const std::uint8_t* data, std::size_t size,
                                                std::string* error = nullptr);
+    /// Parses only the metadata; objects are read through `read` when asked for.
+    static std::optional<SerializedFile> Open(ReadRange read, std::uint64_t size,
+                                              std::string* error = nullptr);
 
     std::uint32_t Version() const { return version_; }
     const std::string& UnityVersion() const { return unity_version_; }
     const std::vector<ObjectInfo>& Objects() const { return objects_; }
     const std::vector<SerializedType>& Types() const { return types_; }
 
+    /// External files, in FileID order (FileID 1 is externals[0]); "archive:/CAB-.../CAB-...".
+    const std::vector<std::string>& Externals() const { return externals_; }
+    const ObjectInfo* Find(std::int64_t path_id) const;
+
     /// Reads an object through its type tree. `truncated` (optional) reports whether a
-    /// ManagedReferencesRegistry field stopped the read early.
+    /// ManagedReferencesRegistry field stopped the read early (its types were not available).
     std::optional<Value> ReadObject(const ObjectInfo& obj, bool* truncated = nullptr) const;
+    /// The object's m_Name without reading the rest of it ("" when it has none).
+    std::string PeekName(const ObjectInfo& obj) const;
+    /// The object's type, or null.
+    const SerializedType* TypeOf(const ObjectInfo& obj) const;
+    /// Whether the type's root has a field named `name` (identifies MonoBehaviour classes).
+    static bool HasField(const SerializedType& type, std::string_view name);
 
 private:
+    bool ReadObjectBytes(const ObjectInfo& obj, std::size_t limit, Bytes& out) const;
+
     std::uint32_t version_ = 0;
     bool little_endian_ = true;
     std::string unity_version_;
     std::uint64_t data_offset_ = 0;
     std::vector<SerializedType> types_;
     std::vector<ObjectInfo> objects_;
-    // The file bytes are owned here so objects can be read later.
-    std::shared_ptr<const Bytes> bytes_;
+    std::vector<std::string> externals_;
+    std::vector<SerializedType> ref_types_;
+    mutable std::unordered_map<std::int64_t, std::size_t> index_;
+    ReadRange read_;
+    std::uint64_t file_size_ = 0;
 };
 
 } // namespace bc_unity

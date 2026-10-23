@@ -57,8 +57,15 @@ constexpr u64 kWrdId = 0x48;
 constexpr u64 kWorldDataRooms = 0x50;
 constexpr u64 kExplorerStates = 0x30;
 constexpr u64 kExplorerLastMapPos = 0x90;
+constexpr u64 kExplorerLastSaveRoom = 0x88;
 constexpr u64 kStateDims = 0x10;
 constexpr u64 kStateChunks = 0x18;
+constexpr u64 kStateDiscoveredZDoorZones = 0x28;
+constexpr u64 kStateEnteredZDoors = 0x38;
+constexpr u64 kStateDiscoveredSecrets = 0x48;
+constexpr u64 kStateEnteredZones = 0x50;
+constexpr u64 kStateActivated = 0x58;
+constexpr u32 kMaxListItems = 4096;
 
 constexpr u32 kMaxSystems = 512;
 constexpr u32 kMaxDictEntries = 4096;
@@ -102,6 +109,49 @@ struct Io {
             }
         }
         return {};
+    }
+    /// List<int>; a null list is empty.
+    bool IntList(u64 list, std::vector<s32>& out) const {
+        out.clear();
+        if (list == 0)
+            return true;
+        u64 items = 0;
+        s32 size = 0;
+        if (!Get(list + kListSize, size) || size < 0 || static_cast<u32>(size) > kMaxListItems ||
+            !Get(list + kListItems, items))
+            return false;
+        if (size == 0)
+            return true;
+        u64 cap = 0;
+        if (!items || !Get(items + kArrayLength, cap) || cap < static_cast<u64>(size))
+            return false;
+        out.resize(static_cast<std::size_t>(size));
+        return Bytes(items + kArrayData, out.data(), out.size() * 4);
+    }
+    /// List<string>; a null list is empty.
+    bool StringList(u64 list, std::vector<std::string>& out) const {
+        out.clear();
+        if (list == 0)
+            return true;
+        u64 items = 0, cap = 0;
+        s32 size = 0;
+        if (!Get(list + kListSize, size) || size < 0 || static_cast<u32>(size) > kMaxListItems ||
+            !Get(list + kListItems, items))
+            return false;
+        if (size == 0)
+            return true;
+        if (!items || !Get(items + kArrayLength, cap) || cap < static_cast<u64>(size))
+            return false;
+        std::vector<u64> ptrs(static_cast<std::size_t>(size));
+        if (!Bytes(items + kArrayData, ptrs.data(), ptrs.size() * 8))
+            return false;
+        for (const u64 p : ptrs) {
+            std::string v;
+            if (!String(p, v, 128))
+                return false;
+            out.push_back(std::move(v));
+        }
+        return true;
     }
     /// System.String (UTF-16) as UTF-8; empty when absent or implausible.
     bool String(u64 obj, std::string& out, s32 max = 256) const {
@@ -357,6 +407,9 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
                 out.map_y = v[1];
                 out.map_z = v[2];
             }
+            u64 last_save = 0;
+            if (io.Get(explorer + kExplorerLastSaveRoom, last_save))
+                io.String(last_save, out.last_save_room, 160);
             u64 dict = 0, entries = 0, cap = 0;
             s32 count = 0;
             if (with_fog && io.Ptr(explorer + kExplorerStates, dict) &&
@@ -404,6 +457,21 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
                     }
                     fr.w = dims[0];
                     fr.h = dims[1];
+                    // Exploration zones, Z-doors, secrets and activated elements. A list that
+                    // cannot be read leaves that list empty; the chunk states still count.
+                    {
+                        u64 l = 0;
+                        if (io.Get(value + kStateEnteredZones, l))
+                            io.IntList(l, fr.entered_zones);
+                        if (io.Get(value + kStateEnteredZDoors, l))
+                            io.IntList(l, fr.entered_zdoors);
+                        if (io.Get(value + kStateDiscoveredZDoorZones, l))
+                            io.IntList(l, fr.discovered_zdoor_zones);
+                        if (io.Get(value + kStateDiscoveredSecrets, l))
+                            io.IntList(l, fr.discovered_secrets);
+                        if (io.Get(value + kStateActivated, l))
+                            io.StringList(l, fr.activated);
+                    }
                     if (arr && io.Get(arr + kArrayLength, n) && n <= kMaxChunks) {
                         std::vector<s32> raw(static_cast<std::size_t>(n));
                         if (n && !io.Bytes(arr + kArrayData, raw.data(), raw.size() * 4)) {
@@ -420,9 +488,18 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
                     }
                     hash = Fnv(hash, fr.key.data(), fr.key.size());
                     hash = Fnv(hash, fr.states.data(), fr.states.size());
+                    for (const auto* ids : {&fr.entered_zones, &fr.entered_zdoors, &fr.discovered_zdoor_zones,
+                                            &fr.discovered_secrets}) {
+                        const u32 n32 = static_cast<u32>(ids->size());
+                        hash = Fnv(hash, &n32, 4);
+                        hash = Fnv(hash, ids->data(), ids->size() * 4);
+                    }
+                    for (const auto& a : fr.activated)
+                        hash = Fnv(hash, a.data(), a.size() + 1);
                     out.fog.push_back(std::move(fr));
                 }
                 if (ok) {
+                    hash = Fnv(hash, out.last_save_room.data(), out.last_save_room.size());
                     out.fog_ok = true;
                     out.fog_entries = count;
                     out.fog_hash = hash;
