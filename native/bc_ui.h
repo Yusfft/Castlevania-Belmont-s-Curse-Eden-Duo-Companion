@@ -64,8 +64,20 @@ std::vector<std::uint8_t> Button(const bc_levelmap::Common& c, const std::string
 /// A square framed cell holding a sprite (a pin symbol); `selected` lights it.
 std::vector<std::uint8_t> IconCell(const bc_levelmap::Common& c, const std::string& sprite, bool selected, int w,
                                    int h);
-/// A line of text, centred.
-std::vector<std::uint8_t> Label(const bc_levelmap::Common& c, const std::string& text, float size, int w, int h);
+/// A line of text, centred (`align` 0) or right-aligned (1).
+std::vector<std::uint8_t> Label(const bc_levelmap::Common& c, const std::string& text, float size, int w, int h,
+                                int align = 0, const bc_shade::Vec4& color = {0.80f, 0.75f, 0.66f, 1});
+/// "Press (A) to confirm": text with a button glyph in the game's prompt style, centred.
+std::vector<std::uint8_t> Prompt(const bc_levelmap::Common& c, const std::string& before, const std::string& button,
+                                 const std::string& after, float size, int w, int h);
+/// The game-over card: the death icon, the game's ornament and "Game Over", with a glow of
+/// strength `glow` (0..1) around them.
+std::vector<std::uint8_t> GameOver(const bc_levelmap::Common& c, float glow, int w, int h);
+/// The page before a save is loaded: the game's painted biome card (Common::ui "menu_card")
+/// centred, over a blurred, darkened copy of itself filling the page. Empty when there is no card.
+std::vector<std::uint8_t> MenuArt(const bc_levelmap::Common& c, int w, int h);
+/// "Paused" between two ornaments.
+std::vector<std::uint8_t> Paused(const bc_levelmap::Common& c, int w, int h);
 
 /// The zoom levels' names, closest last.
 extern const char* const kZoomNames[];

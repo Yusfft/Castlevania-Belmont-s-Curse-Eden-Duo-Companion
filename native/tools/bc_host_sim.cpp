@@ -293,6 +293,23 @@ int main(int argc, char** argv) {
                         static_cast<long long>(sim.ints["bc.map.pox"]));
     }
     std::printf("window changes while walking 40 tiles: %d\n", key_changes);
+    // A one-off bad position (two samples far away) must not move the view; one that holds must.
+    {
+        const auto mk = [&] { return std::to_string(sim.ints["bc.map.ox"]) + "," + std::to_string(sim.ints["bc.map.oy"]); };
+        const std::string before = mk();
+        sim.guest.Put<float>(sim.guest.explorer_ + 0x90, 300.0f);
+        sample_n(2);
+        const std::string during = mk();
+        sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -94.0f);
+        sample_n(2);
+        std::printf("glitch: before %s during %s after %s glitches %lld\n", before.c_str(), during.c_str(), mk().c_str(),
+                    static_cast<long long>(sim.ints["bc.pos.glitch"]));
+        sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -60.0f);
+        sample_n(10);
+        std::printf("teleport held 10 samples: %s key %s\n", mk().c_str(), sim.texts["bc.map.key"].c_str());
+        sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -94.0f);
+        sample_n(10);
+    }
     ext->on_action(inst, "zoom", 0); // close -> medium
     sample_n(2);
     std::printf("medium: key=%s\n", sim.texts["bc.map.key"].c_str());
@@ -372,6 +389,29 @@ int main(int argc, char** argv) {
                     static_cast<long long>(sim.ints["bc.zoom"]), sim.texts["bc.map.key"].c_str());
         ext->on_action(inst, "zoom_set", 4);
         sample_n(2);
+    }
+    // Pause, then a death.
+    {
+        sim.guest.SetPause(true);
+        sample_n(2);
+        std::printf("paused=%lld f=%lld bkey=%s marks='%s'\n", static_cast<long long>(sim.ints["bc.paused"]),
+                    static_cast<long long>(sim.ints["bc.paused.f"]), sim.texts["bc.map.bkey"].c_str(),
+                    sim.texts["bc.marks"].c_str());
+        save(sim.texts["bc.map.bkey"], "sim_blur");
+        save("module:bc:ui:paused", "sim_ui3_paused");
+        sim.guest.SetPause(false);
+        sample_n(2);
+        std::printf("unpaused=%lld\n", static_cast<long long>(sim.ints["bc.paused"]));
+        sim.guest.SetDied(false);
+        sample_n(2);
+        sim.guest.SetDied(true);
+        sample_n(2);
+        std::printf("died: go.show=%lld key=%s\n", static_cast<long long>(sim.ints["bc.go.show"]), sim.texts["bc.go.key"].c_str());
+        for (int f : {0, 3, 7})
+            save("module:bc:ui:gameover:" + std::to_string(f), "sim_ui3_gameover" + std::to_string(f));
+        save("module:bc:ui:prompt", "sim_ui3_prompt");
+        save("module:bc:ui:version", "sim_ui3_version");
+        save("module:bc:ui:menuart", "sim_ui4_menuart");
     }
     save(sim.texts["bc.title.key"], "sim_main_title");
     ext->on_action(inst, "zoom", 0);

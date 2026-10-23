@@ -33,6 +33,14 @@ PIN_SLOTS = 24                # kPinSlots
 BTN_W, BTN_H = 170, 56        # kButtonW / kButtonH
 LABEL_W, LABEL_H = 700, 70    # kLabelW / kLabelH
 PIN_X, PIN_Y = W - BTN_W - 40, 30
+GO_W, GO_H = 760, 420         # kGameOverW / kGameOverH
+PAUSED_W, PAUSED_H = 600, 200 # kPausedW / kPausedH
+PROMPT_W, PROMPT_H = 700, 70  # kPromptW / kPromptH
+VER_W, VER_H = 460, 50        # kVersionW / kVersionH
+
+
+def fade(group, ms):
+    return {"anim": {"bind": group, "from": "fade", "ms": ms, "group": group}}
 
 
 def label(rect, text=None, bind_text=None, scale=4, color=TEXT, **kw):
@@ -87,15 +95,24 @@ map_page = {
          "need_bind": "bc.map.area"},
         # The game's player marker, centred; it only moves in the whole-area view.
         *[marker(b, sz) for b, sz in MARKER.items()],
+        # Pause (a menu or the pause screen open in the game): the map blurred under "Paused".
+        {"type": "image", "rect": [0, 0, 2048, 1536], "src_bind": "bc.map.bkey",
+         "x_bind": "bc.map.ox", "y_bind": "bc.map.oy", **fade("bc.paused.f", 260)},
+        {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.map.bakey", **fade("bc.paused.a", 260)},
+        rect([0, 0, W, H], "#59000000", **fade("bc.paused", 260)),
+        {"type": "image", "rect": [(W - PAUSED_W) // 2, (H - PAUSED_H) // 2, PAUSED_W, PAUSED_H],
+         "src": "module:bc:ui:paused", **fade("bc.paused", 260)},
         # Pin mode: a tap anywhere on the map (under the buttons) goes to the module.
         rect([0, 0, W, H], "#00000000", on_tap="act_pin_tap", payload="$tap", need_bind="bc.pin.mode"),
+        # Before a save is loaded: one of the game's painted biome cards.
+        {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:menuart", "need_bind": "bc.ui.wait"},
         # The map screen's gold-edged frame (game art, drawn by the module).
         {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:frame", "need_bind": "bc.ui.ok"},
-        {"type": "image", "rect": [(W - LABEL_W) // 2, 505, LABEL_W, LABEL_H], "src": "module:bc:ui:wait",
-         "need_bind": "bc.ui.wait"},
-        # Placed by hand (20 glyphs of 16 px): a centred label opens shifted on some hosts.
-        label([W // 2 - 160, 520, 360, 40], text="WAITING FOR THE GAME", scale=4, color=DIM,
-              need_bind="bc.ui.waitplain"),
+        # Before a save is loaded (the game's own menus): the prompt and the mod's version.
+        {"type": "image", "rect": [(W - PROMPT_W) // 2, H - PROMPT_H - 40, PROMPT_W, PROMPT_H],
+         "src": "module:bc:ui:prompt", "need_bind": "bc.ui.wait"},
+        {"type": "image", "rect": [W - VER_W - 30, H - VER_H - 24, VER_W, VER_H],
+         "src": "module:bc:ui:version", "need_bind": "bc.ui.wait"},
         # Level banner with the area and district names (a plain label until the art is read).
         {"type": "image", "rect": [14, 10, TITLE_W, TITLE_H], "src_bind": "bc.title.key",
          "need_bind": "bc.title.img"},
@@ -133,6 +150,10 @@ map_page = {
         button(40, "-", "act_zoom_out", y=H - 90, w=120, h=70) | {"need_bind": "bc.ui.plain"},
         button(180, "+", "act_zoom_in", y=H - 90, w=120, h=70) | {"need_bind": "bc.ui.plain"},
         button(W - 260, "DEBUG", "act_debug", y=H - 90, w=220, h=70) | {"need_bind": "bc.ui.plain"},
+        # Game over: the screen darkens and the card glows up and fades.
+        rect([0, 0, W, H], "#B3000000", **fade("bc.go.show", 380)),
+        {"type": "image", "rect": [(W - GO_W) // 2, (H - GO_H) // 2, GO_W, GO_H], "src_bind": "bc.go.key",
+         **fade("bc.go.show", 380)},
         # Holding the title also opens the debug page.
         label([24, 14, 560, 110], text=" ", scale=5, color=GOLD, on_hold="act_debug", hold_ms=900),
     ],
@@ -166,7 +187,7 @@ rows = [
     ("WORLD LOG", "t2", "bc.world.log"),
     ("LEVEL MAP  LOAD MS  DRAW MS", "iii", "bc.lm.state", "bc.lm.ms", "bc.render.ms"),
     ("LEVEL MAP LOG", "t3", "bc.lm.log"),
-    ("ZOOM  POS MODE  SAMPLE US", "iii", "bc.zoom", "bc.pos.mode", "bc.us"),
+    ("ZOOM POS GLITCH US", "iiii", "bc.zoom", "bc.pos.mode", "bc.pos.glitch", "bc.us"),
 ]
 
 debug_widgets = [

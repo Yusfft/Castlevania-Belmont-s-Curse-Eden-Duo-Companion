@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.5.0)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.5.3)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -41,6 +41,14 @@ from the player's own romfs and drawn by the native module.
   same symbol takes it away. Up to 24 pins, kept across sessions in the runtime's persisted flags
   (`persist_flags`, outside the package and the game's save). They are the page's own: the game's
   map does not show them.
+- **Game over.** When the player dies the page darkens and a card with the game's death icon and
+  ornament glows up and fades (`DeathResultComponent.hasJustDied`, set by
+  `DeathManagementSystem` the moment of death).
+- **Pause.** While a menu or the pause screen is open (the game's ECS context paused by a game state
+  that takes UI input), the map is blurred under "Paused".
+- **Before a save is loaded** (the game's own menus): one of the game's painted biome cards (the
+  save screen's `T_UI_Save_BiomeCards` atlas, one picked at random each session) over a blurred
+  copy of itself, "Press A to confirm" at the bottom and the mod's version at the bottom right.
 - **Debug page.** The Debug button (or hold the area name): every step of the live memory chain
   and the map loader's log.
 
@@ -93,11 +101,14 @@ All locations come from the game's own `global-metadata.dat` (IL2CPP v31) and `m
 | Player position | `ExplorerComponent.lastMainMapPosition` `+0x90` (Vector3, world units), written every frame by `ExplorationSystem.TryUpdateMainMapPosition` from the player's transform |
 | Exploration | `ExplorationSystem._mcExplorerComponent` `+0x48` → `worldRoomExplorationStates` (`Dictionary<string, WorldRoomExplorationState>`) |
 | Per room | `enteredZonesIds` `+0x50`, `enteredZDoorIDs` `+0x38`, `discoveredZDoorExplorationZoneIDs` `+0x28`, `discoveredSecretZones` `+0x48`, `gpeSpecialActivated` `+0x58` (all `List`) |
+| Pause | `SystemManager._context` `+0x20` → `EntityContext._contextPaused` `+0x68`; the active state: `GameStateManager` (TypeInfo slot `main+0x6BDBA10`) `._instance._states` `+0xA0` top → `+0x18` → `EditorParameteredGameState` (`_pauseEntityContext` `+0x18`, `_activeActionMaps` `+0x28`) |
 | Last save room | `ExplorerComponent.lastUsedSaveRoomId` `+0x88` |
 | Current map | `ExplorerComponent.lastMainMapLevelId` `+0xA0` → `LevelID._guid` `+0x18` (matched with the map scene's `LevelMapContext.level`) |
 | Player components | `ExplorerComponent.selfEntity` `+0x20` → `Entity.componentCache` `+0x30` (`Dictionary<int, Component>`, filled in `Awake`) |
 | Map markers | `MapMarkersComponent._levelsMarkersData` `+0x28` (`Dictionary<LevelID, LevelMarkersData>`) → `markersData` `+0x18` → `MapMarkerData` (`position` `+0x14`, `markerTypeGuid` `+0x20`); the type guid is a `MapMarker_<Name>_ID` and its icon is `Map_MarkerSet_<Name>` |
 | Death spot | `DeathResultComponent.levelIdOfLastDeath` `+0x58`, `positionOfLastDeath` `+0x24` (`lastMainMapDeathPosition` `+0x30` when `lastDeathInFastTravelRoom` `+0x49`), shown like `LevelMapDeathSpotItem.Refresh` |
+
+The position is read twice per sample and taken only when both reads agree (the game writes it from another core). A jump of more than 12 units is shown only once it holds for 6 samples, a missing position keeps the last good one for 3 s, and a change of world must hold 10 samples, so a stray value never moves the map.
 
 Classes are checked by name before their fields are read, every read is bounded, and each step
 fails closed. Under NCE the data segment may sit at a constant shift from `main_base`; the

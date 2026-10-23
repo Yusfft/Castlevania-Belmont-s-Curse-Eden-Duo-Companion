@@ -14,7 +14,8 @@ struct FakeGuest {
     std::uint64_t heap_next = 0x20000000;
     std::uint64_t main_base = 0x8000000;
     std::uint64_t main_size = 0x7400000;
-    std::uint64_t explorer_ = 0; // ExplorerComponent of the last Build, for moving the player
+    std::uint64_t explorer_ = 0;
+    std::uint64_t sysmgr_ = 0, data_ = 0, death_ = 0, ctx_ = 0, state_ = 0; // ExplorerComponent of the last Build, for moving the player
     // The exploration dictionary of the last Build, for adding rooms.
     std::uint64_t dict_entries_ = 0, dict_ = 0, kstring_ = 0, karray_ = 0, klist_ = 0, kstate_ = 0;
     std::int32_t dict_count_ = 0;
@@ -107,6 +108,8 @@ struct FakeGuest {
         const std::uint64_t statics = Alloc(16);
         Put<std::uint64_t>(ksys + 0xB8, statics);
         const std::uint64_t sysmgr = Obj(ksys, 0x98);
+        sysmgr_ = sysmgr;
+        data_ = data;
         Put<std::uint64_t>(statics, sysmgr);
 
         const std::uint64_t krm = Klass("RoomManager", "RoomManagerSystem");
@@ -202,6 +205,39 @@ struct FakeGuest {
         Put<std::int32_t>(dict_ + 0x20, dict_count_);
     }
 
+    void SetDied(bool died) { Put<std::uint8_t>(death_ + 0x20, died ? 1 : 0); }
+
+    /// The game's pause: the ECS context flag and the active game state (a menu state with the
+    /// "UI" action map when `menu`).
+    void SetPause(bool paused, bool menu = true) {
+        if (!ctx_) {
+            ctx_ = Obj(Klass("MotherBase.EntityFramework", "EntityContext"), 0x70);
+            Put<std::uint64_t>(sysmgr_ + 0x20, ctx_);
+            const std::uint64_t kgsm = Klass("", "GameStateManager");
+            Put<std::uint64_t>(data_ + 0x6BDBA10, kgsm);
+            const std::uint64_t statics = Alloc(16);
+            Put<std::uint64_t>(kgsm + 0xB8, statics);
+            const std::uint64_t gsm = Obj(kgsm, 0xD0);
+            Put<std::uint64_t>(statics, gsm);
+            state_ = Obj(Klass("", "EditorParameteredGameState"), 0x30);
+            const std::uint64_t entry = Obj(Klass("", "GameStateManager.Entry"), 0x20);
+            Put<std::uint64_t>(entry + 0x18, state_);
+            const std::uint64_t base = Obj(Klass("", "EditorParameteredGameState"), 0x30);
+            const std::uint64_t base_entry = Obj(Klass("", "GameStateManager.Entry"), 0x20);
+            Put<std::uint64_t>(base_entry + 0x18, base);
+            const std::uint64_t stack = Obj(Klass("System.Collections.Generic", "Stack`1"), 0x28);
+            Put<std::uint64_t>(stack + 0x10, Array<std::uint64_t>(karray_, {base_entry, entry, 0}));
+            Put<std::int32_t>(stack + 0x18, 2);
+            Put<std::uint64_t>(gsm + 0xA0, stack);
+            Put<std::uint64_t>(state_ + 0x28, Array<std::uint64_t>(karray_, {String(kstring_, "UI"), String(kstring_, "Debug")}));
+        }
+        Put<std::uint8_t>(ctx_ + 0x68, paused ? 1 : 0);
+        Put<std::uint8_t>(state_ + 0x18, paused ? 1 : 0);
+        Put<std::uint8_t>(state_ + 0x19, paused ? 1 : 0);
+        if (!menu)
+            Put<std::uint64_t>(state_ + 0x28, Array<std::uint64_t>(karray_, {String(kstring_, "Gameplay")}));
+    }
+
     void SetLastSave(const std::string& room_id) { Put<std::uint64_t>(explorer_ + 0x88, String(kstring_, room_id)); }
 
     struct FakeMarker {
@@ -254,6 +290,7 @@ struct FakeGuest {
         const std::uint64_t mc = Obj(Klass("", "MapMarkersComponent"), 0x40);
         Put<std::uint64_t>(mc + 0x28, dict({{level, lmd}}));
         const std::uint64_t death = Obj(Klass("", "DeathResultComponent"), 0x60);
+        death_ = death;
         if (died) {
             Put<float>(death + 0x24, death_x);
             Put<float>(death + 0x28, death_y);

@@ -18,6 +18,7 @@ using s64 = std::int64_t;
 // ---- build-pinned locations (main-relative) ----
 constexpr u64 kMetadataRegistration = 0x6A95908; // Il2CppMetadataRegistration
 constexpr u64 kSystemManagerTypeInfo = 0x6D47368;
+constexpr u64 kGameStateManagerTypeInfo = 0x6BDBA10; // GameStateManager::GetInstance
 constexpr u64 kSystemManagerEncoded = 0x200117D1; // unresolved metadata-usage token (TypeInfo #35816)
 
 // Il2CppMetadataRegistration counts for this build (entries 0, 2, 6, 10, 12).
@@ -74,6 +75,16 @@ constexpr u64 kDeathMainMapPosition = 0x30;
 constexpr u64 kDeathInFastTravelRoom = 0x49;
 constexpr u64 kDeathLevelId = 0x58;
 constexpr u32 kMaxComponents = 256;
+constexpr u64 kDeathJustDied = 0x20;
+constexpr u64 kSysMgrContext = 0x20;
+constexpr u64 kContextPaused = 0x68;
+constexpr u64 kGsmStates = 0xA0;
+constexpr u64 kStackArray = 0x10;
+constexpr u64 kStackSize = 0x18;
+constexpr u64 kStateEntryState = 0x18;
+constexpr u64 kGameStatePause = 0x18;
+constexpr u64 kGameStatePausePlaytime = 0x19;
+constexpr u64 kGameStateActionMaps = 0x28;
 constexpr u32 kMaxMarkerLevels = 64;
 constexpr u32 kMaxMarkers = 512;
 constexpr u64 kStateDims = 0x10;
@@ -485,6 +496,7 @@ void Reader::ReadPlayerComponents(const Memory& mem, u64 explorer, State& out) {
                 out.markers_ok = true;
             }
         } else if (cls == "DeathResultComponent") {
+            death_comp_ = comp;
             u64 level = 0;
             float p[3], mp[3];
             u8 fast = 0;
@@ -503,6 +515,58 @@ void Reader::ReadPlayerComponents(const Memory& mem, u64 explorer, State& out) {
     }
 }
 
+void Reader::ReadPause(const Memory& mem, State& out) {
+    Io io{mem};
+    u64 ctx = 0;
+    u8 b = 0;
+    if (sysmgr_ && io.Ptr(sysmgr_ + kSysMgrContext, ctx) &&
+        ClassOf(mem, ctx) == "MotherBase.EntityFramework.EntityContext" && io.Get(ctx + kContextPaused, b)) {
+        out.ctx_ok = true;
+        out.ctx_paused = b != 0;
+    }
+    u64 klass = 0;
+    const u64 slot = mem.main_base + kGameStateManagerTypeInfo + static_cast<u64>(delta_);
+    if (!io.Get(slot, klass) || klass == 0 || (klass & 7) != 0)
+        return;
+    if (klass != gsm_class_) {
+        u64 np = 0, nsp = 0;
+        if (!io.Get(klass + kClassName, np) || !io.Get(klass + kClassNamespace, nsp) ||
+            io.CStr(np) != "GameStateManager" || !io.CStr(nsp).empty())
+            return;
+        gsm_class_ = klass;
+    }
+    u64 sf = 0, gsm = 0, stack = 0, arr = 0, len = 0, entry = 0, state = 0, maps = 0, n = 0;
+    s32 size = 0;
+    if (!sf_offset_ || !io.Ptr(klass + static_cast<u64>(sf_offset_), sf) || !io.Ptr(sf, gsm) ||
+        !io.Ptr(gsm + kGsmStates, stack) || !io.Get(stack + kStackSize, size) || size <= 0 || size > 64 ||
+        !io.Ptr(stack + kStackArray, arr) || !io.Get(arr + kArrayLength, len) || len < static_cast<u64>(size) ||
+        !io.Ptr(arr + kArrayData + 8 * static_cast<u64>(size - 1), entry) ||
+        !io.Ptr(entry + kStateEntryState, state) || ClassOf(mem, state) != "EditorParameteredGameState")
+        return;
+    u8 pause = 0, play = 0;
+    if (!io.Get(state + kGameStatePause, pause) || !io.Get(state + kGameStatePausePlaytime, play))
+        return;
+    out.gs_ok = true;
+    out.gs_pause = pause != 0;
+    out.gs_pause_playtime = play != 0;
+    bool ui = false;
+    if (io.Get(state + kGameStateActionMaps, maps) && maps && io.Get(maps + kArrayLength, n) && n <= 16) {
+        for (u64 i = 0; i < n; ++i) {
+            u64 sp = 0;
+            std::string name;
+            if (!io.Get(maps + kArrayData + 8 * i, sp) || !io.String(sp, name, 48))
+                break;
+            if (!out.gs_maps.empty())
+                out.gs_maps += ",";
+            out.gs_maps += name;
+            ui = ui || name == "UI";
+        }
+    }
+    // A menu or the pause screen: the state pauses the game and takes UI input. Loading,
+    // transitions and cutscenes do not count.
+    out.paused = out.ctx_ok && out.ctx_paused && out.gs_pause && ui;
+}
+
 void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
     ++samples_;
     out = State{};
@@ -514,6 +578,7 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
     if (!ResolveSystemManager(mem, out) || !FindSystems(mem, out))
         return;
     out.status = "ok";
+    ReadPause(mem, out);
 
     // Room manager: current chunk and room. Read twice; a change between reads is a transition.
     if (rm_) {
@@ -554,11 +619,18 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
             out.ex_room_uid = uid;
         }
         if (io.Ptr(ex_ + kExExplorer, explorer)) {
-            float v[3];
-            if (io.Get(explorer + kExplorerLastMapPos, v)) {
-                out.map_x = v[0];
-                out.map_y = v[1];
-                out.map_z = v[2];
+            // The game writes the position every frame on another core: two equal reads in a
+            // row, so a half-written vector (x of one frame, y of another) is never taken.
+            float v[3], w[3];
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                if (!io.Get(explorer + kExplorerLastMapPos, v) || !io.Get(explorer + kExplorerLastMapPos, w))
+                    break;
+                if (std::memcmp(v, w, sizeof v) == 0) {
+                    out.map_x = v[0];
+                    out.map_y = v[1];
+                    out.map_z = v[2];
+                    break;
+                }
             }
             u64 last_save = 0;
             if (io.Get(explorer + kExplorerLastSaveRoom, last_save))
@@ -568,6 +640,11 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
                 io.String(gs, out.level_guid, 64);
             if (with_fog)
                 ReadPlayerComponents(mem, explorer, out);
+            if (u8 died = 0; death_comp_ && ClassOf(mem, death_comp_) == "DeathResultComponent" &&
+                             io.Get(death_comp_ + kDeathJustDied, died)) {
+                out.death_flag_ok = true;
+                out.just_died = died != 0;
+            }
             u64 dict = 0, entries = 0, cap = 0;
             s32 count = 0;
             if (with_fog && io.Ptr(explorer + kExplorerStates, dict) &&

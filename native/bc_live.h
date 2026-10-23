@@ -111,6 +111,20 @@ struct State {
     bool markers_ok = false;
     std::vector<MapMarker> markers;
     DeathSpot death;
+    // DeathResultComponent.hasJustDied (+0x20), read every sample: set by
+    // DeathManagementSystem the moment the player dies.
+    bool death_flag_ok = false;
+    bool just_died = false;
+
+    // Pause: SystemManager._context (+0x20) -> EntityContext._contextPaused (+0x68), which
+    // GameStateManager.TransitionState sets for states that pause the game; and the active
+    // state (GameStateManager._instance._states top +0x18, an EditorParameteredGameState:
+    // _pauseEntityContext +0x18, _pausePlaytimeCount +0x19, _activeActionMaps string[] +0x28).
+    bool ctx_ok = false, ctx_paused = false;
+    bool gs_ok = false, gs_pause = false, gs_pause_playtime = false;
+    std::string gs_maps; // the active state's action maps, comma separated
+    /// A menu or pause screen is open: the game is paused and the state takes UI input.
+    bool paused = false;
 
     bool fog_ok = false;
     std::int32_t fog_entries = 0, fog_matched = 0;
@@ -134,6 +148,10 @@ private:
     const std::string& ClassOf(const Memory& mem, std::uint64_t obj);
     /// Markers and death spot from the components of the explorer's entity.
     void ReadPlayerComponents(const Memory& mem, std::uint64_t explorer, State& out);
+    /// The pause state (context flag and the active game state).
+    void ReadPause(const Memory& mem, State& out);
+    std::uint64_t death_comp_ = 0; // DeathResultComponent found by ReadPlayerComponents
+    std::uint64_t gsm_class_ = 0;
 
     bool delta_known_ = false;
     std::int64_t delta_ = 0;

@@ -3,6 +3,8 @@
 
 #include "bc_ui.h"
 
+#include <cstring>
+
 #include <algorithm>
 #include <cmath>
 
@@ -401,11 +403,190 @@ std::vector<std::uint8_t> IconCell(const bc_levelmap::Common& c, const std::stri
     return cv.Encode();
 }
 
-std::vector<std::uint8_t> Label(const bc_levelmap::Common& c, const std::string& text, float size, int w, int h) {
+std::vector<std::uint8_t> Label(const bc_levelmap::Common& c, const std::string& text, float size, int w, int h,
+                                int align, const Vec4& color) {
     Canvas cv(w, h);
     const float tw = Canvas::TextWidth(c.font, text, size);
-    cv.Text(c.font, text, (static_cast<float>(w) - tw) / 2, 0.5f * static_cast<float>(h) + 0.35f * size, size,
-            {0.80f, 0.75f, 0.66f, 1});
+    const float x = align == 1 ? static_cast<float>(w) - tw - 0.2f * size : (static_cast<float>(w) - tw) / 2;
+    cv.Text(c.font, text, x, 0.5f * static_cast<float>(h) + 0.35f * size, size, color);
+    return cv.Encode();
+}
+
+std::vector<std::uint8_t> Prompt(const bc_levelmap::Common& c, const std::string& before, const std::string& button,
+                                 const std::string& after, float size, int w, int h) {
+    Canvas cv(w, h);
+    const Vec4 text{0.80f, 0.75f, 0.66f, 1};
+    const float r = 0.62f * size; // the button glyph: a gold ring with the letter
+    const float gap = 0.35f * size;
+    const float w1 = Canvas::TextWidth(c.font, before, size), w2 = Canvas::TextWidth(c.font, after, size);
+    const float total = w1 + gap + 2 * r + gap + w2;
+    float x = (static_cast<float>(w) - total) / 2;
+    const float base = 0.5f * static_cast<float>(h) + 0.35f * size;
+    cv.Text(c.font, before, x, base, size, text);
+    x += w1 + gap;
+    const float cx = x + r, cy = 0.5f * static_cast<float>(h);
+    for (int y = static_cast<int>(cy - r - 2); y <= static_cast<int>(cy + r + 2); ++y) {
+        for (int px = static_cast<int>(cx - r - 2); px <= static_cast<int>(cx + r + 2); ++px) {
+            const float d = std::hypot(static_cast<float>(px) + 0.5f - cx, static_cast<float>(y) + 0.5f - cy);
+            const float ring = std::clamp(1.0f - std::fabs(d - (r - 1.5f)) / 1.6f, 0.0f, 1.0f);
+            const float fill = std::clamp(r - 2.0f - d, 0.0f, 1.0f);
+            if (fill > 0)
+                cv.Paint(px, y, {0.10f, 0.08f, 0.07f, 1}, 0.85f * fill);
+            if (ring > 0)
+                cv.Paint(px, y, kGold, ring);
+        }
+    }
+    const float bs = 1.05f * size;
+    const float bw = Canvas::TextWidth(c.font, button, bs, false);
+    cv.Text(c.font, button, cx - bw / 2, cy + 0.36f * bs, bs, kGold, false);
+    x += 2 * r + gap;
+    cv.Text(c.font, after, x, base, size, text);
+    return cv.Encode();
+}
+
+namespace {
+/// A soft disc of light (sRGB colour) for glows.
+void Glow(Canvas& cv, float cx, float cy, float rx, float ry, const Vec4& color, float strength) {
+    if (strength <= 0)
+        return;
+    const int x0 = static_cast<int>(cx - rx), x1 = static_cast<int>(cx + rx);
+    const int y0 = static_cast<int>(cy - ry), y1 = static_cast<int>(cy + ry);
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            const float dx = (static_cast<float>(x) + 0.5f - cx) / rx, dy = (static_cast<float>(y) + 0.5f - cy) / ry;
+            const float d = dx * dx + dy * dy;
+            if (d >= 1)
+                continue;
+            const float t = (1 - d) * (1 - d);
+            cv.Paint(x, y, color, strength * t);
+        }
+    }
+}
+} // namespace
+
+std::vector<std::uint8_t> GameOver(const bc_levelmap::Common& c, float glow, int w, int h) {
+    Canvas cv(w, h);
+    const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+    // A soft dark backing (no edges), then the glow behind the skull.
+    Glow(cv, fw / 2, fh / 2, 0.50f * fw, 0.50f * fh, {0, 0, 0, 1}, 0.75f);
+    Glow(cv, fw / 2, 0.36f * fh, 0.30f * fw, 0.34f * fh, {0.75f, 0.10f, 0.08f, 1}, 0.55f * glow);
+    Glow(cv, fw / 2, 0.36f * fh, 0.16f * fw, 0.20f * fh, {1.0f, 0.78f, 0.45f, 1}, 0.35f * glow);
+    if (const Sprite* skull = Ui(c, "Map_DeathLocationIcon")) {
+        const float s = 0.42f * fh;
+        const float k = s / std::max(1.0f, static_cast<float>(skull->tex.h));
+        const float sw = static_cast<float>(skull->tex.w) * k;
+        cv.Blit(*skull, (fw - sw) / 2, 0.36f * fh - s / 2, sw, s);
+    }
+    const float size = 0.15f * fh;
+    const std::string title = "Game Over";
+    const float tw = Canvas::TextWidth(c.font, title, size);
+    const Vec4 col{0.92f + 0.08f * glow, 0.80f + 0.12f * glow, 0.55f + 0.25f * glow, 1};
+    cv.Text(c.font, title, (fw - tw) / 2, 0.74f * fh, size, col);
+    if (const Sprite* orn = Ui(c, "CommonUI_Ornament_01")) {
+        // Under the title, kept inside the card.
+        float ow = 0.45f * fw;
+        float oh = ow * static_cast<float>(orn->tex.h) / std::max(1.0f, static_cast<float>(orn->tex.w));
+        const float room = 0.95f * fh - 0.79f * fh;
+        if (oh > room)
+            ow *= room / oh, oh = room;
+        cv.Blit(*orn, (fw - ow) / 2, 0.79f * fh, ow, oh);
+    }
+    return cv.Encode();
+}
+
+std::vector<std::uint8_t> MenuArt(const bc_levelmap::Common& c, int w, int h) {
+    const Sprite* card = Ui(c, "menu_card");
+    if (!card)
+        return {};
+    const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+    const float aw = static_cast<float>(card->tex.w), ah = static_cast<float>(card->tex.h);
+    // Background: the card covering the page, drawn small, blurred, then stretched back.
+    constexpr int kDiv = 8;
+    const int sw = std::max(1, w / kDiv), sh = std::max(1, h / kDiv);
+    Canvas small(sw, sh);
+    {
+        const float k = std::max(static_cast<float>(sw) / aw, static_cast<float>(sh) / ah);
+        small.Blit(*card, (static_cast<float>(sw) - aw * k) / 2, (static_cast<float>(sh) - ah * k) / 2, aw * k, ah * k);
+    }
+    std::vector<std::uint8_t> px = small.Encode();
+    for (int pass = 0; pass < 3; ++pass) {
+        std::vector<std::uint8_t> out(px.size());
+        for (int y = 0; y < sh; ++y) {
+            for (int x = 0; x < sw; ++x) {
+                int acc[4] = {0, 0, 0, 0}, n = 0;
+                for (int dy = -2; dy <= 2; ++dy) {
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        const int xx = std::clamp(x + dx, 0, sw - 1), yy = std::clamp(y + dy, 0, sh - 1);
+                        const std::uint8_t* p = &px[(static_cast<std::size_t>(yy) * sw + xx) * 4];
+                        for (int k = 0; k < 4; ++k)
+                            acc[k] += p[k];
+                        ++n;
+                    }
+                }
+                for (int k = 0; k < 4; ++k)
+                    out[(static_cast<std::size_t>(y) * sw + x) * 4 + k] = static_cast<std::uint8_t>(acc[k] / n);
+            }
+        }
+        px.swap(out);
+    }
+    Sprite bg;
+    bg.tex.w = static_cast<std::uint32_t>(sw);
+    bg.tex.h = static_cast<std::uint32_t>(sh);
+    bg.tex.slices = 1;
+    bg.tex.srgb = true;
+    bg.tex.rgba.resize(px.size());
+    for (int y = 0; y < sh; ++y) // stored rows run bottom-up, like the game's textures
+        std::memcpy(bg.tex.rgba.data() + static_cast<std::size_t>(sh - 1 - y) * sw * 4,
+                    px.data() + static_cast<std::size_t>(y) * sw * 4, static_cast<std::size_t>(sw) * 4);
+    Canvas cv(w, h);
+    cv.Blit(bg, 0, 0, fw, fh, {0.38f, 0.36f, 0.40f, 1});
+    // The card itself, with a soft shadow and a thin gold edge.
+    const float ch = 0.84f * fh, cw = ch * aw / ah;
+    const float x0 = (fw - cw) / 2, y0 = 0.05f * fh;
+    for (int y = static_cast<int>(y0 - 30); y < static_cast<int>(y0 + ch + 30); ++y) {
+        for (int x = static_cast<int>(x0 - 30); x < static_cast<int>(x0 + cw + 30); ++x) {
+            const float dx = std::max({x0 - static_cast<float>(x), static_cast<float>(x) - (x0 + cw), 0.0f});
+            const float dy = std::max({y0 - static_cast<float>(y), static_cast<float>(y) - (y0 + ch), 0.0f});
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d > 0 && d < 30)
+                cv.Darken(x, y, 0.6f * (1 - d / 30) * (1 - d / 30));
+        }
+    }
+    cv.Blit(*card, x0, y0, cw, ch);
+    for (int i = 0; i < 2; ++i) {
+        const float a = i == 0 ? 0.9f : 0.35f;
+        const int l = static_cast<int>(x0) - 1 - i, r = static_cast<int>(x0 + cw) + i;
+        const int t = static_cast<int>(y0) - 1 - i, b = static_cast<int>(y0 + ch) + i;
+        for (int x = l; x <= r; ++x) {
+            cv.Paint(x, t, kGold, a);
+            cv.Paint(x, b, kGold, a);
+        }
+        for (int y = t; y <= b; ++y) {
+            cv.Paint(l, y, kGold, a);
+            cv.Paint(r, y, kGold, a);
+        }
+    }
+    // Darker towards the bottom, under the prompt.
+    for (int y = static_cast<int>(0.80f * fh); y < h; ++y) {
+        const float t = (static_cast<float>(y) - 0.80f * fh) / (0.20f * fh);
+        for (int x = 0; x < w; ++x)
+            cv.Darken(x, y, 0.75f * t * t);
+    }
+    return cv.Encode();
+}
+
+std::vector<std::uint8_t> Paused(const bc_levelmap::Common& c, int w, int h) {
+    Canvas cv(w, h);
+    const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+    const float size = 0.42f * fh;
+    const std::string text = "Paused";
+    const float tw = Canvas::TextWidth(c.font, text, size);
+    cv.Text(c.font, text, (fw - tw) / 2, 0.52f * fh, size, kGold);
+    if (const Sprite* orn = Ui(c, "CommonUI_Ornament_01")) {
+        const float ow = std::min(0.8f * fw, tw * 1.4f);
+        const float oh = ow * static_cast<float>(orn->tex.h) / std::max(1.0f, static_cast<float>(orn->tex.w));
+        cv.Blit(*orn, (fw - ow) / 2, 0.62f * fh, ow, oh);
+    }
     return cv.Encode();
 }
 

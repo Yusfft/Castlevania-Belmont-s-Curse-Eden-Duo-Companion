@@ -56,7 +56,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.5.0";
+constexpr const char* kVersion = "0.5.3";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -91,6 +91,26 @@ constexpr double kPlayerLift = 0.7;
 // Map drawing runs beside the emulator: few threads, low priority, and a new window at most
 // every kRedrawSeconds for exploration changes alone.
 constexpr int kRenderThreads = 2;
+// Position glitches: a jump of more than kJumpUnits from the last position is taken only once
+// it holds for kJumpSamples samples in a row (a real teleport shows ~0.1 s later; a one-off bad
+// value never shows). A missing or implausible position keeps the last good one for
+// kHoldSeconds. A change of world must also hold kWorldSamples samples.
+constexpr double kJumpUnits = 12.0;
+constexpr int kJumpSamples = 6;
+constexpr double kHoldSeconds = 3.0;
+constexpr int kWorldSamples = 10;
+// Game over: shown kGameOverSeconds after the player dies, its glow running through
+// kGameOverGlow (one frame every kGameOverFrameMs), then held at the last.
+constexpr double kGameOverSeconds = 2.8;
+constexpr int kGameOverFrameMs = 110;
+constexpr float kGameOverGlow[] = {0.15f, 0.45f, 0.80f, 1.0f, 0.80f, 0.55f, 0.35f, 0.20f};
+constexpr int kGameOverFrames = sizeof(kGameOverGlow) / sizeof(kGameOverGlow[0]);
+constexpr int kGameOverW = 760, kGameOverH = 420;
+constexpr int kPausedW = 600, kPausedH = 200;
+constexpr int kPromptW = 700, kPromptH = 70;
+constexpr int kVersionW = 460, kVersionH = 50;
+// The pause screen's blurred map: the window drawn this many times smaller, stretched back.
+constexpr int kBlurDiv = 6;
 constexpr double kRedrawSeconds = 6.0;
 
 constexpr const char* kCatalog = "Data/StreamingAssets/aa/catalog.json";
@@ -342,6 +362,20 @@ struct Instance {
     Window cur, prev;
     std::string last_world;
     double last_wx = 0, last_wy = 0;
+    // Glitch filter (tick thread).
+    std::string shown_world;
+    int world_votes = 0;
+    bool pos_ok = false;
+    std::string pos_world;
+    double pos_x = 0, pos_y = 0, cand_x = 0, cand_y = 0;
+    int cand_n = 0;
+    std::chrono::steady_clock::time_point pos_time{};
+    u64 glitches = 0;
+    // Game over and pause (tick thread).
+    bool died_known = false, prev_died = false;
+    std::chrono::steady_clock::time_point game_over_at{};
+    bool game_over_seen = false;
+    std::string blur_key, blur_area_key;
     std::chrono::steady_clock::time_point last_window{};
     double cost_us = 0;
 
@@ -741,7 +775,12 @@ void PublishDebug(const EdenDsmodHostApi* h, const bc_live::State& s) {
         death = b;
     }
     PublishT(h, "bc.death", death);
-    PublishT(h, "bc.marks", (s.markers_ok ? std::to_string(s.markers.size()) : std::string("-")) + "  " + death);
+    PublishT(h, "bc.marks", (s.markers_ok ? std::to_string(s.markers.size()) : std::string("-")) + "  " + death +
+                                "  | died " + (s.death_flag_ok ? std::to_string(s.just_died) : std::string("-")) +
+                                " ctx " + (s.ctx_ok ? std::to_string(s.ctx_paused) : std::string("-")) + " state " +
+                                (s.gs_ok ? (std::to_string(s.gs_pause) + std::to_string(s.gs_pause_playtime) + " " + s.gs_maps)
+                                         : std::string("-")) +
+                                (s.paused ? " PAUSED" : ""));
 }
 
 std::string MapKey(const Window& w) {
@@ -830,6 +869,23 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         if (!with_fog)
             fresh.last_save_room = inst->live.last_save_room.empty() ? fresh.last_save_room : inst->live.last_save_room;
         inst->live = std::move(fresh);
+        {
+            // A world change must hold a few samples (a stray read during a transition would
+            // swap the map for one frame).
+            bc_live::State& l = inst->live;
+            if (l.room_ok && !l.world_name.empty()) {
+                if (inst->shown_world.empty() || l.world_name == inst->shown_world) {
+                    inst->shown_world = l.world_name;
+                    inst->world_votes = 0;
+                } else if (++inst->world_votes >= kWorldSamples) {
+                    inst->shown_world = l.world_name;
+                    inst->world_votes = 0;
+                } else {
+                    l.world_name = inst->shown_world;
+                    ++inst->glitches;
+                }
+            }
+        }
         const bc_live::State& s = inst->live;
         const auto world = inst->World();
         const bool world_ready = world && !world->biomes.empty();
@@ -914,6 +970,40 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 }
             }
         }
+        {
+            const auto now = std::chrono::steady_clock::now();
+            if (pos_mode == 1) {
+                bool take = true;
+                if (inst->pos_ok && inst->pos_world == s.world_name &&
+                    std::hypot(pwx - inst->pos_x, pwy - inst->pos_y) > kJumpUnits) {
+                    // A jump: wait until the new place holds.
+                    if (inst->cand_n > 0 && std::hypot(pwx - inst->cand_x, pwy - inst->cand_y) < 3.0)
+                        ++inst->cand_n;
+                    else
+                        inst->cand_n = 1;
+                    inst->cand_x = pwx, inst->cand_y = pwy;
+                    take = inst->cand_n >= kJumpSamples;
+                    if (!take) {
+                        pwx = inst->pos_x, pwy = inst->pos_y;
+                        ++inst->glitches;
+                    }
+                }
+                if (take) {
+                    inst->pos_ok = true;
+                    inst->pos_world = s.world_name;
+                    inst->pos_x = pwx, inst->pos_y = pwy;
+                    inst->pos_time = now;
+                    inst->cand_n = 0;
+                }
+            } else if (inst->pos_ok && inst->pos_world == s.world_name &&
+                       std::chrono::duration<double>(now - inst->pos_time).count() < kHoldSeconds) {
+                // A moment without a good position: stay where the player was.
+                pwx = inst->pos_x, pwy = inst->pos_y;
+                pos_mode = 1;
+                ++inst->glitches;
+            }
+        }
+        PublishI(h, "bc.pos.glitch", static_cast<s64>(inst->glitches));
         // No position yet (the game writes it once the player moves): the last known one in this
         // world, else the current room's chunk from the live room data.
         if (pos_mode) {
@@ -1102,6 +1192,47 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             inst->tap_view_ok = false;
         }
         PublishPins(inst, h);
+        {
+            // Game over: from the moment the game marks the player dead.
+            const auto now = std::chrono::steady_clock::now();
+            if (s.death_flag_ok) {
+                if (inst->died_known && s.just_died && !inst->prev_died) {
+                    inst->game_over_at = now;
+                    inst->game_over_seen = true;
+                }
+                inst->prev_died = s.just_died;
+                inst->died_known = true;
+            }
+            const double since = std::chrono::duration<double>(now - inst->game_over_at).count();
+            const bool game_over = inst->game_over_seen && since < kGameOverSeconds;
+            const int frame = std::clamp(static_cast<int>(since * 1000.0 / kGameOverFrameMs), 0, kGameOverFrames - 1);
+            char gk[48];
+            std::snprintf(gk, sizeof gk, "module:bc:ui:gameover:%d", game_over ? frame : kGameOverFrames - 1);
+            PublishT(h, "bc.go.key", gk);
+            PublishI(h, "bc.go.show", game_over);
+            // Pause: the map blurred under "Paused" while a menu or the pause screen is open.
+            const bool paused = s.paused && !game_over && (follow || area);
+            if (follow && inst->cur.valid && !inst->cur.legacy && inst->cur.key.rfind("module:bc:", 0) == 0)
+                inst->blur_key = "module:bc:blur:" + inst->cur.key.substr(10);
+            if (area && lm) {
+                Window w;
+                w.biome = number;
+                w.zoom = 0;
+                w.explore = inst->explore_id;
+                if (pos_mode)
+                    w.cx = lm->NavZoneAt(static_cast<float>(pwx), static_cast<float>(pwy));
+                {
+                    std::lock_guard lock(inst->pin_mutex);
+                    w.pins = inst->pins_rev;
+                }
+                inst->blur_area_key = "module:bc:blur:" + MapKey(w).substr(10);
+            }
+            PublishT(h, "bc.map.bkey", inst->blur_key);
+            PublishT(h, "bc.map.bakey", inst->blur_area_key);
+            PublishI(h, "bc.paused", paused);
+            PublishI(h, "bc.paused.f", paused && follow && !inst->blur_key.empty());
+            PublishI(h, "bc.paused.a", paused && area && !inst->blur_area_key.empty());
+        }
         {
             // The zoom scale closes by itself after a while.
             if (inst->zoom_bar &&
@@ -1323,6 +1454,23 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
     } else if (what == "wait") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common, "Waiting for the game", 40, w, h);
+    } else if (int f = 0; std::sscanf(what.c_str(), "gameover:%d", &f) == 1) {
+        w = kGameOverW, h = kGameOverH;
+        px = bc_ui::GameOver(*common, kGameOverGlow[std::clamp(f, 0, kGameOverFrames - 1)], w, h);
+    } else if (what == "menuart") {
+        w = kCanvasW, h = kCanvasH;
+        px = bc_ui::MenuArt(*common, w, h);
+        if (px.empty())
+            return false;
+    } else if (what == "paused") {
+        w = kPausedW, h = kPausedH;
+        px = bc_ui::Paused(*common, w, h);
+    } else if (what == "prompt") {
+        w = kPromptW, h = kPromptH;
+        px = bc_ui::Prompt(*common, "Press", "A", "to confirm", 30, w, h);
+    } else if (what == "version") {
+        w = kVersionW, h = kVersionH;
+        px = bc_ui::Label(*common, std::string("Dual Screen Mod ") + kVersion, 26, w, h, 1, {0.62f, 0.58f, 0.52f, 1});
     } else if (what == "pinhint") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common, "Tap the map to place a pin", 34, w, h);
@@ -1388,8 +1536,43 @@ std::vector<bc_mapdraw::ExtraIcon> MapExtras(const bc_levelmap::LevelMap& lm, co
     return out;
 }
 
+/// Two passes of a (2r+1)-wide box blur over straight RGBA8 (a soft, near-gaussian blur).
+void BoxBlur(std::vector<u8>& px, int w, int h, int r) {
+    std::vector<u8> tmp(px.size());
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                int acc[4] = {0, 0, 0, 0}, n = 0;
+                for (int k = -r; k <= r; ++k) {
+                    const int xx = std::clamp(x + k, 0, w - 1);
+                    const u8* p = &px[(static_cast<std::size_t>(y) * w + xx) * 4];
+                    for (int c = 0; c < 4; ++c)
+                        acc[c] += p[c];
+                    ++n;
+                }
+                for (int c = 0; c < 4; ++c)
+                    tmp[(static_cast<std::size_t>(y) * w + x) * 4 + c] = static_cast<u8>(acc[c] / n);
+            }
+        }
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                int acc[4] = {0, 0, 0, 0}, n = 0;
+                for (int k = -r; k <= r; ++k) {
+                    const int yy = std::clamp(y + k, 0, h - 1);
+                    const u8* p = &tmp[(static_cast<std::size_t>(yy) * w + x) * 4];
+                    for (int c = 0; c < 4; ++c)
+                        acc[c] += p[c];
+                    ++n;
+                }
+                for (int c = 0; c < 4; ++c)
+                    px[(static_cast<std::size_t>(y) * w + x) * 4 + c] = static_cast<u8>(acc[c] / n);
+            }
+        }
+    }
+}
+
 bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64 explore, u64 pins_rev,
-                       void* receiver, EdenDsmodImageSink sink) {
+                       void* receiver, EdenDsmodImageSink sink, bool blur = false) {
     const auto lm = inst->WaitLevelMap(number, 30);
     if (!lm)
         return false;
@@ -1419,17 +1602,25 @@ bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64
     }
     std::vector<u8> px;
     int w, h;
+    // Blurred (pause screen): the same view drawn kBlurDiv times smaller and softened; the page
+    // stretches it back over the sharp one.
+    const int div = blur ? kBlurDiv : 1;
     if (zoom == 0) {
-        w = kCanvasW;
-        h = kCanvasH;
-        opt.min_icon_px = 22;
-        px = bc_mapdraw::Render(*lm, *reveal, bc_mapdraw::FitZone(*lm, cx, w, h), opt);
+        w = kCanvasW / div;
+        h = kCanvasH / div;
+        opt.min_icon_px = 22.0f / static_cast<float>(div);
+        auto v = bc_mapdraw::FitZone(*lm, cx, kCanvasW, kCanvasH);
+        v.scale /= div;
+        v.w = w, v.h = h;
+        px = bc_mapdraw::Render(*lm, *reveal, v, opt);
     } else {
-        w = kWindowW;
-        h = kWindowH;
+        w = kWindowW / div;
+        h = kWindowH / div;
         const double scale = kZoomScale[std::clamp(zoom, 1, kZoomLevels - 1)];
-        px = bc_mapdraw::Render(*lm, *reveal, bc_mapdraw::CenteredView(cx, cy, scale, w, h), opt);
+        px = bc_mapdraw::Render(*lm, *reveal, bc_mapdraw::CenteredView(cx, cy, scale / div, w, h), opt);
     }
+    if (blur)
+        BoxBlur(px, w, h, 2);
     inst->last_render_ms = static_cast<int>(
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     sink(receiver, static_cast<u32>(w), static_cast<u32>(h), px.data(), px.size());
@@ -1495,6 +1686,9 @@ EdenDsmodBool LoadImage(void* p, const EdenDsmodHostApi*, const char* key, void*
             return LoadTitle(inst, id, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         int number = 0, zoom = 0, cx = 0, cy = 0;
         unsigned long long pins = 0;
+        if (std::sscanf(key, "module:bc:blur:lm:4:%d:%d:%d:%d:%llx:%llx", &number, &zoom, &cx, &cy, &id, &pins) == 6)
+            return LoadLevelMapImage(inst, number, zoom, cx, cy, id, pins, receiver, sink, true) ? EDEN_DSMOD_TRUE
+                                                                                               : EDEN_DSMOD_FALSE;
         if (std::sscanf(key, "module:bc:lm:4:%d:%d:%d:%d:%llx:%llx", &number, &zoom, &cx, &cy, &id, &pins) == 6)
             return LoadLevelMapImage(inst, number, zoom, cx, cy, id, pins, receiver, sink) ? EDEN_DSMOD_TRUE
                                                                                          : EDEN_DSMOD_FALSE;

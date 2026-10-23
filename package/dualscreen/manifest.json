@@ -823,6 +823,74 @@
      "need_bind": "bc.mk.z4"
     },
     {
+     "type": "image",
+     "rect": [
+      0,
+      0,
+      2048,
+      1536
+     ],
+     "src_bind": "bc.map.bkey",
+     "x_bind": "bc.map.ox",
+     "y_bind": "bc.map.oy",
+     "anim": {
+      "bind": "bc.paused.f",
+      "from": "fade",
+      "ms": 260,
+      "group": "bc.paused.f"
+     }
+    },
+    {
+     "type": "image",
+     "rect": [
+      0,
+      0,
+      1240,
+      1080
+     ],
+     "src_bind": "bc.map.bakey",
+     "anim": {
+      "bind": "bc.paused.a",
+      "from": "fade",
+      "ms": 260,
+      "group": "bc.paused.a"
+     }
+    },
+    {
+     "type": "rect",
+     "rect": [
+      0,
+      0,
+      1240,
+      1080
+     ],
+     "bg": "#59000000",
+     "color": "#00000000",
+     "frame": 0,
+     "anim": {
+      "bind": "bc.paused",
+      "from": "fade",
+      "ms": 260,
+      "group": "bc.paused"
+     }
+    },
+    {
+     "type": "image",
+     "rect": [
+      320,
+      440,
+      600,
+      200
+     ],
+     "src": "module:bc:ui:paused",
+     "anim": {
+      "bind": "bc.paused",
+      "from": "fade",
+      "ms": 260,
+      "group": "bc.paused"
+     }
+    },
+    {
      "type": "rect",
      "rect": [
       0,
@@ -845,6 +913,17 @@
       1240,
       1080
      ],
+     "src": "module:bc:ui:menuart",
+     "need_bind": "bc.ui.wait"
+    },
+    {
+     "type": "image",
+     "rect": [
+      0,
+      0,
+      1240,
+      1080
+     ],
      "src": "module:bc:ui:frame",
      "need_bind": "bc.ui.ok"
     },
@@ -852,25 +931,23 @@
      "type": "image",
      "rect": [
       270,
-      505,
+      970,
       700,
       70
      ],
-     "src": "module:bc:ui:wait",
+     "src": "module:bc:ui:prompt",
      "need_bind": "bc.ui.wait"
     },
     {
-     "type": "label",
+     "type": "image",
      "rect": [
+      750,
+      1006,
       460,
-      520,
-      360,
-      40
+      50
      ],
-     "text_scale": 4,
-     "color": "#FF9A8FB0",
-     "text": "WAITING FOR THE GAME",
-     "need_bind": "bc.ui.waitplain"
+     "src": "module:bc:ui:version",
+     "need_bind": "bc.ui.wait"
     },
     {
      "type": "image",
@@ -1228,6 +1305,40 @@
      "bg": "#FF2A2238",
      "border": 3,
      "need_bind": "bc.ui.plain"
+    },
+    {
+     "type": "rect",
+     "rect": [
+      0,
+      0,
+      1240,
+      1080
+     ],
+     "bg": "#B3000000",
+     "color": "#00000000",
+     "frame": 0,
+     "anim": {
+      "bind": "bc.go.show",
+      "from": "fade",
+      "ms": 380,
+      "group": "bc.go.show"
+     }
+    },
+    {
+     "type": "image",
+     "rect": [
+      240,
+      330,
+      760,
+      420
+     ],
+     "src_bind": "bc.go.key",
+     "anim": {
+      "bind": "bc.go.show",
+      "from": "fade",
+      "ms": 380,
+      "group": "bc.go.show"
+     }
     },
     {
      "type": "label",
@@ -2091,7 +2202,7 @@
      ],
      "text_scale": 3,
      "color": "#FF9A8FB0",
-     "text": "ZOOM  POS MODE  SAMPLE US"
+     "text": "ZOOM POS GLITCH US"
     },
     {
      "type": "value",
@@ -2121,6 +2232,18 @@
      "type": "value",
      "rect": [
       820,
+      954,
+      190,
+      29
+     ],
+     "bind": "bc.pos.glitch",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      1020,
       954,
       190,
       29

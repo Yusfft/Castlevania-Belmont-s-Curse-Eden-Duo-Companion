@@ -4,6 +4,7 @@
 #include "bc_levelmap.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -27,6 +28,7 @@ constexpr int kClassMonoBehaviour = 114;
 constexpr int kClassSprite = 213;
 constexpr int kClassSpriteRenderer = 212;
 constexpr int kClassTexture2DArray = 187;
+constexpr int kClassSpriteAtlas = 687078895;
 
 // Where the referenced assets live: map art per biome, shared UI art, fonts, districts.
 const std::vector<std::string> kArtPrefixes = {"art-", "ui-", "map-", "shaders_"};
@@ -1383,6 +1385,68 @@ std::shared_ptr<const Common> LoadCommon(Assets& assets, const Codecs& codecs) {
         Log(log, std::to_string(c->ui.size()) + " ui sprites");
     } else {
         Log(log, "ui-gamemenus bundle missing");
+    }
+    // One of the save screen's painted biome cards (sprite atlas T_UI_Save_BiomeCards), picked
+    // at random: the art of the page shown before a save is loaded.
+    if (const auto ca = assets.Open(assets.Find("ui-commonsalltime_assets_all")); ca && ca->sf) {
+        for (const auto& o : ca->sf->Objects()) {
+            if (o.class_id != kClassSpriteAtlas || ca->sf->PeekName(o) != "T_UI_Save_BiomeCards")
+                continue;
+            const auto v = ca->sf->ReadObject(o);
+            const Value* map = v ? v->Get("m_RenderDataMap") : nullptr;
+            if (!map || map->list.empty())
+                break;
+            const auto pick = static_cast<std::size_t>(
+                std::chrono::steady_clock::now().time_since_epoch().count() / 1000 % static_cast<long long>(map->list.size()));
+            const Value& entry = map->list[pick];
+            const Value* data = entry.Get("second");
+            if (!data && entry.list.size() == 2)
+                data = &entry.list[1];
+            const Value* rect = data ? data->Get("textureRect") : nullptr;
+            const auto ref = data ? assets.Resolve(ca, data->Get("texture"), {"ui-"}) : Assets::Ref{};
+            if (!rect || !ref || ref.obj->class_id != kClassTexture2D)
+                break;
+            std::string err;
+            auto tex = LoadTexture2D(*ref.file, *ref.obj, codecs, &err);
+            if (!tex) {
+                Log(log, "biome card: " + err);
+                break;
+            }
+            const int x0 = std::clamp(static_cast<int>(std::lround(Flt(rect->Get("x")))), 0, static_cast<int>(tex->w));
+            const int y0 = std::clamp(static_cast<int>(std::lround(Flt(rect->Get("y")))), 0, static_cast<int>(tex->h));
+            const int cw = std::clamp(static_cast<int>(std::lround(Flt(rect->Get("width")))), 1, static_cast<int>(tex->w) - x0);
+            const int ch = std::clamp(static_cast<int>(std::lround(Flt(rect->Get("height")))), 1, static_cast<int>(tex->h) - y0);
+            Sprite card;
+            card.tex.w = static_cast<std::uint32_t>(cw);
+            card.tex.h = static_cast<std::uint32_t>(ch);
+            card.tex.slices = 1;
+            card.tex.srgb = tex->srgb;
+            card.tex.rgba.resize(static_cast<std::size_t>(cw) * ch * 4);
+            for (int y = 0; y < ch; ++y)
+                std::memcpy(card.tex.rgba.data() + static_cast<std::size_t>(y) * cw * 4,
+                            tex->rgba.data() + (static_cast<std::size_t>(y0 + y) * tex->w + x0) * 4,
+                            static_cast<std::size_t>(cw) * 4);
+            card.width = static_cast<float>(cw) / 100.0f;
+            card.height = static_cast<float>(ch) / 100.0f;
+            c->ui["menu_card"] = std::move(card);
+            Log(log, "biome card " + std::to_string(pick) + " " + std::to_string(cw) + "x" + std::to_string(ch));
+            break;
+        }
+    }
+    // The common in-game UI's ornament and vignette (game-over and pause screens).
+    if (const auto ci = assets.Open(assets.Find("ui-commonsingame_assets_all")); ci && ci->sf) {
+        for (const auto& o : ci->sf->Objects()) {
+            if (o.class_id != kClassSprite)
+                continue;
+            const std::string name = ci->sf->PeekName(o);
+            if ((name != "CommonUI_Ornament_01" && name != "T_UI_GEN_Vignette") || c->ui.count(name))
+                continue;
+            std::string err;
+            if (auto sp = LoadSprite(assets, ci, o, codecs, &err))
+                c->ui[name] = std::move(*sp);
+            else
+                Log(log, name + ": " + err);
+        }
     }
     // Marker types: "MapMarker_<Name>_ID" (a MapMarkerTypeID, with the guid the save keeps) is
     // shown with "Map_MarkerSet_<Name>" (its MapMarker_<Name>_DisplayData's icon).
