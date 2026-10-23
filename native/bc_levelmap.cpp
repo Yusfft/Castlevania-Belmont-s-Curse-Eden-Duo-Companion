@@ -811,6 +811,7 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
     const ObjectInfo* renderer = nullptr;
     const ObjectInfo* fow = nullptr;
     const ObjectInfo* model = nullptr;
+    const ObjectInfo* context = nullptr;
     std::vector<const ObjectInfo*> districts;
     std::vector<const ObjectInfo*> nav_zones;
     std::vector<const ObjectInfo*> secret_items;
@@ -848,6 +849,8 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
                 fow = &o;
             } else if (HasField(sf, o, "globalBoundsCoord")) {
                 model = &o;
+            } else if (HasField(sf, o, "levelMapRenderer") && HasField(sf, o, "fowModel")) {
+                context = &o;
             } else if (HasField(sf, o, "districtGenerationData")) {
                 districts.push_back(&o);
             } else if (HasField(sf, o, "cameraBounds") && HasField(sf, o, "navigationZoneCollider")) {
@@ -889,6 +892,18 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
     }
     Log(log, "scene " + scene->bundle_name + ": " + std::to_string(xf.size()) + " transforms, " +
                  std::to_string(items.size()) + " items, " + std::to_string(sprite_renderers.size()) + " sprites");
+
+    // ---- the level this map shows (LevelMapContext.level -> LevelID._guid)
+    if (context) {
+        if (const auto v = sf.ReadObject(*context)) {
+            const auto ref = assets.Resolve(scene, v->Get("level"), {"leveldata-savablescriptableobject", "leveldata"});
+            if (ref) {
+                if (const auto lv = ref.file->sf->ReadObject(*ref.obj))
+                    lm->level_guid = Str(lv->Get("_guid"));
+            }
+        }
+    }
+    Log(log, "level " + (lm->level_guid.empty() ? std::string("?") : lm->level_guid));
 
     // ---- tiles and material
     if (!renderer) {
@@ -1348,7 +1363,8 @@ std::shared_ptr<const Common> LoadCommon(Assets& assets, const Codecs& codecs) {
                 continue;
             const std::string name = ui->sf->PeekName(o);
             const bool player = name == "Map_PlayerIcon";
-            bool wanted = player;
+            // The death spot and the player's own map markers.
+            bool wanted = player || name == "Map_DeathLocationIcon" || name.rfind("Map_MarkerSet_", 0) == 0;
             for (const char* k : kUi)
                 wanted |= name == k;
             if (!wanted || (!player && c->ui.count(name)))
@@ -1367,6 +1383,28 @@ std::shared_ptr<const Common> LoadCommon(Assets& assets, const Codecs& codecs) {
         Log(log, std::to_string(c->ui.size()) + " ui sprites");
     } else {
         Log(log, "ui-gamemenus bundle missing");
+    }
+    // Marker types: "MapMarker_<Name>_ID" (a MapMarkerTypeID, with the guid the save keeps) is
+    // shown with "Map_MarkerSet_<Name>" (its MapMarker_<Name>_DisplayData's icon).
+    if (const auto so = assets.Open(assets.Find("savablescriptableobject_assets_all")); so && so->sf) {
+        for (const auto& o : so->sf->Objects()) {
+            if (o.class_id != kClassMonoBehaviour)
+                continue;
+            const std::string name = so->sf->PeekName(o);
+            if (name.rfind("MapMarker_", 0) != 0 || !EndsWith(name, "_ID"))
+                continue;
+            const std::string sprite = "Map_MarkerSet_" + name.substr(10, name.size() - 13);
+            if (!c->ui.count(sprite))
+                continue;
+            if (const auto v = so->sf->ReadObject(o)) {
+                const std::string guid = Str(v->Get("_guid"));
+                if (!guid.empty())
+                    c->marker_types[guid] = sprite;
+            }
+        }
+        Log(log, std::to_string(c->marker_types.size()) + " marker types");
+    } else {
+        Log(log, "marker types missing");
     }
     if (const auto ff = assets.Open(assets.Find("fonts-latin_assets_all")); ff && ff->sf) {
         for (const auto& o : ff->sf->Objects()) {

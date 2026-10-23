@@ -19,7 +19,15 @@
 //   ExplorerComponent
 //     worldRoomExplorationStates Dictionary<string, WorldRoomExplorationState> +0x30
 //     lastMainMapPosition Vector3 +0x90
-//     lastUsedSaveRoomId string +0x88
+//     lastUsedSaveRoomId string +0x88, lastMainMapLevelId LevelID +0xA0, selfEntity Entity +0x20
+//   LevelID (SavableScriptableObject)  _guid string +0x18
+//   MotherBase.EntityFramework.Entity  componentCache Dictionary<int, Component> +0x30 (every
+//     component of the entity, filled in Awake)
+//   MapMarkersComponent  _levelsMarkersData Dictionary<LevelID, LevelMarkersData> +0x28
+//   LevelMarkersData  level LevelID +0x10, markersData List<MapMarkerData> +0x18
+//   MapMarkerData  id int +0x10, position Vector2 +0x14, markerTypeGuid string +0x20
+//   DeathResultComponent  positionOfLastDeath Vector3 +0x24, lastMainMapDeathPosition Vector3
+//     +0x30, lastDeathInFastTravelRoom bool +0x49, levelIdOfLastDeath LevelID +0x58
 //   WorldRoomExplorationState  roomDimensions Vector2Int +0x10, chunksExplorationState int[] +0x18,
 //     discoveredZDoorExplorationZoneIDs List<int> +0x28, enteredZDoorIDs List<int> +0x38,
 //     discoveredSecretZones List<int> +0x48, enteredZonesIds List<int> +0x50,
@@ -58,6 +66,23 @@ struct FogRoom {
     std::vector<std::string> activated;               // GUIDs of activated gameplay elements
 };
 
+/// A marker the player placed on the map (MapMarkersComponent).
+struct MapMarker {
+    std::string level_guid; // LevelID._guid of the map it is on
+    std::string type_guid;  // MapMarkerTypeID._guid (cross, chest, sun, ...)
+    std::int32_t id = 0;
+    float x = 0, y = 0;     // world position on that map
+};
+
+/// Where the player last died (DeathResultComponent), as the map's death spot shows it.
+struct DeathSpot {
+    bool known = false;
+    std::string level_guid; // levelIdOfLastDeath
+    float x = 0, y = 0;     // positionOfLastDeath
+    bool in_fast_travel_room = false;
+    float main_x = 0, main_y = 0; // lastMainMapDeathPosition
+};
+
 struct State {
     // Resolve progress: 0 nothing, 1 data shift, 2 SystemManager class, 3 instance,
     // 4 systems found, 5 room read.
@@ -80,6 +105,12 @@ struct State {
     float map_x = 0, map_y = 0, map_z = 0;
 
     std::string last_save_room; // id of the last save room used
+    std::string level_guid;     // ExplorerComponent.lastMainMapLevelId._guid
+
+    // The player's components, found through the explorer's entity (with the exploration walk).
+    bool markers_ok = false;
+    std::vector<MapMarker> markers;
+    DeathSpot death;
 
     bool fog_ok = false;
     std::int32_t fog_entries = 0, fog_matched = 0;
@@ -99,6 +130,10 @@ private:
     bool ResolveDelta(const Memory& mem, State& out);
     bool ResolveSystemManager(const Memory& mem, State& out);
     bool FindSystems(const Memory& mem, State& out);
+    /// "namespace.Name" of an object's class ("" when unreadable), cached by class pointer.
+    const std::string& ClassOf(const Memory& mem, std::uint64_t obj);
+    /// Markers and death spot from the components of the explorer's entity.
+    void ReadPlayerComponents(const Memory& mem, std::uint64_t explorer, State& out);
 
     bool delta_known_ = false;
     std::int64_t delta_ = 0;

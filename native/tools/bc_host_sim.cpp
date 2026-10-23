@@ -224,6 +224,12 @@ int main(int argc, char** argv) {
             for (const auto& [k, zs] : rooms)
                 sim.guest.AddRoom(k, zs, {27, 29});
             sim.guest.SetLastSave("World_Biome_01_Streets_Poor_StreetsPoor_SaveRoom02_uid78");
+            // Two markers (cross, chest) and a death spot near (40, 40).
+            sim.guest.SetMapState(lm->level_guid,
+                                  {{"3fbe385e6658a484daabb64abc8b5d03", 52.0f, 46.0f},
+                                   {"f4bef205f62005a41822af84291076f0", 28.0f, 34.0f}},
+                                  true, 46.0f, 30.0f);
+            std::printf("sim: level %s\n", lm->level_guid.c_str());
             std::printf("sim: %zu explored rooms\n", rooms.size());
         }
     }
@@ -305,6 +311,9 @@ int main(int argc, char** argv) {
     sim.guest.Put<float>(sim.guest.explorer_ + 0x90, 40.0f);
     sim.guest.Put<float>(sim.guest.explorer_ + 0x94, 40.0f);
     sample_n(32); // the exploration walk runs twice a second
+    std::printf("markers ok=%lld n=%lld death='%s' level='%s'\n", static_cast<long long>(sim.ints["bc.markers.ok"]),
+                static_cast<long long>(sim.ints["bc.markers.n"]), sim.texts["bc.death"].c_str(),
+                sim.texts["bc.level"].c_str());
     std::printf("main: key=%s title '%s' mk.dy=%lld lm.state=%lld\n", sim.texts["bc.map.key"].c_str(),
                 sim.texts["bc.title"].c_str(), static_cast<long long>(sim.ints["bc.mk.dy"]),
                 static_cast<long long>(sim.ints["bc.lm.state"]));

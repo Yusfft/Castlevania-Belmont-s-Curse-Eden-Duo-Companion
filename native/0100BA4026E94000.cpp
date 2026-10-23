@@ -55,7 +55,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.4.0";
+constexpr const char* kVersion = "0.4.1";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -155,6 +155,8 @@ const std::vector<std::string>& PinnedBundles() {
         "ui-acquisitions_assets_all_401d7a70bb44d71476736dbebe99e9c7.bundle",
         "fonts-latin_assets_all_304d9e1f03b4a2a6d44b17c96032676a.bundle",
         "leveldata_assets_all_940f672e456a1dd57099d3d5c994fbc7.bundle",
+        "leveldata-savablescriptableobject_assets_all_ff1d7d702377adb724f6d92b5520502b.bundle",
+        "savablescriptableobject_assets_all_5b62e0c70cf11954564852274ab4ce5a.bundle",
         "localization-string-tables-english(en)_assets_all_aa06f0f9074c49a1bdd9e6b274bdec25.bundle",
         "district-districtdata_bosszdoor_assets_all_efd62a1f286ba654c232c9da8083666b.bundle",
         "district-districtdata_catacombs-savablescriptableobject_assets_all_2c5599631df37e00b8a1c0d6e6109564.bundle",
@@ -578,6 +580,16 @@ std::shared_ptr<bc_mapdraw::Exploration> BuildExploration(const bc_live::State& 
     } else if (s.room_ok && !s.room_id.empty()) {
         ex->current_room_only = s.room_id;
     }
+    for (const auto& m : s.markers)
+        ex->markers.push_back({m.level_guid, m.type_guid, m.x, m.y});
+    if (s.death.known) {
+        ex->has_death = true;
+        ex->death_level_guid = s.death.level_guid;
+        // In the fast-travel room the game puts the spot on that room's Z-door; the main-map
+        // position at death is where the player left the map for it.
+        ex->death_x = s.death.in_fast_travel_room ? s.death.main_x : s.death.x;
+        ex->death_y = s.death.in_fast_travel_room ? s.death.main_y : s.death.y;
+    }
     return ex;
 }
 
@@ -654,6 +666,18 @@ void PublishDebug(const EdenDsmodHostApi* h, const bc_live::State& s) {
     PublishT(h, "bc.fog.keys", keys);
     PublishT(h, "bc.fog.cur", cur);
     PublishT(h, "bc.save", s.last_save_room);
+    PublishT(h, "bc.level", s.level_guid);
+    PublishI(h, "bc.markers.ok", s.markers_ok);
+    PublishI(h, "bc.markers.n", static_cast<s64>(s.markers.size()));
+    std::string death = "-";
+    if (s.death.known) {
+        char b[96];
+        std::snprintf(b, sizeof b, "%.1f %.1f%s %s", s.death.x, s.death.y, s.death.in_fast_travel_room ? " FT" : "",
+                      s.death.level_guid == s.level_guid ? "here" : "other map");
+        death = b;
+    }
+    PublishT(h, "bc.death", death);
+    PublishT(h, "bc.marks", (s.markers_ok ? std::to_string(s.markers.size()) : std::string("-")) + "  " + death);
 }
 
 std::string MapKey(const Window& w) {
@@ -689,6 +713,9 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             fresh.fog = std::move(inst->live.fog);
             fresh.fog_hash = inst->live.fog_hash;
             fresh.explore_hash = inst->live.explore_hash;
+            fresh.markers_ok = inst->live.markers_ok;
+            fresh.markers = std::move(inst->live.markers);
+            fresh.death = std::move(inst->live.death);
         }
         if (!with_fog)
             fresh.last_save_room = inst->live.last_save_room.empty() ? fresh.last_save_room : inst->live.last_save_room;
@@ -1073,6 +1100,35 @@ bool LoadTitle(Instance* inst, u64 id, void* receiver, EdenDsmodImageSink sink) 
     return true;
 }
 
+/// The death spot and the player's markers on this map, as the map screen places them: both
+/// prefabs (ui-gamemenus) draw their icon under a "DisplayParent" scaled 5x, the death icon
+/// raised by 0.25 inside it.
+std::vector<bc_mapdraw::ExtraIcon> MapExtras(const bc_levelmap::LevelMap& lm, const bc_levelmap::Common& c,
+                                             const bc_mapdraw::Exploration& ex) {
+    constexpr float kItemScale = 5.0f, kDeathRaise = 0.25f;
+    std::vector<bc_mapdraw::ExtraIcon> out;
+    const auto add = [&](const std::string& sprite, float x, float y) {
+        const auto it = c.ui.find(sprite);
+        if (it == c.ui.end())
+            return;
+        bc_mapdraw::ExtraIcon e;
+        e.sprite = &it->second;
+        e.icon.sprite = sprite;
+        e.icon.x = x, e.icon.y = y;
+        e.icon.sx = e.icon.sy = kItemScale;
+        out.push_back(std::move(e));
+    };
+    if (ex.has_death && ex.death_level_guid == lm.level_guid)
+        add("Map_DeathLocationIcon", ex.death_x, ex.death_y + kDeathRaise * kItemScale);
+    for (const auto& m : ex.markers) {
+        if (m.level_guid != lm.level_guid)
+            continue;
+        if (const auto t = c.marker_types.find(m.type_guid); t != c.marker_types.end())
+            add(t->second, m.x, m.y);
+    }
+    return out;
+}
+
 bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64 explore, void* receiver,
                        EdenDsmodImageSink sink) {
     const auto lm = inst->WaitLevelMap(number, 30);
@@ -1089,10 +1145,17 @@ bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64
         empty->known = true; // unknown snapshot: reveal nothing rather than everything
         ex = empty;
     }
+    std::shared_ptr<const bc_levelmap::Common> common;
+    {
+        std::lock_guard lock(inst->world_mutex);
+        common = inst->common;
+    }
     const auto t0 = std::chrono::steady_clock::now();
     const auto reveal = bc_mapdraw::BuildReveal(*lm, *ex);
     bc_mapdraw::RenderOptions opt;
     opt.threads = kRenderThreads;
+    if (common && !lm->level_guid.empty())
+        opt.extra = MapExtras(*lm, *common, *ex);
     std::vector<u8> px;
     int w, h;
     if (zoom == 0) {

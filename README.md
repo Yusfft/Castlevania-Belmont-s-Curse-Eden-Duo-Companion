@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.4.0)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.4.1)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -21,6 +21,9 @@ from the player's own romfs and drawn by the native module.
   has explored is revealed, zone by zone, exactly as the game reveals it.
 - **Map icons.** Mirrors of Life (save points), Z-doors (seen / used), biome exits, elevators,
   barricades and landmarks, shown under the same conditions as in the game.
+- **Your map markers and the death spot.** The markers you place on the game's map (cross,
+  chest, sun, eye, cup, stick, coin, sword, moon) and the red skull where you last died, with
+  the game's own icons, on the map they belong to.
 - **Player marker.** The game's gold star, at the player's exact position every frame. The map
   slides under it; a new section is drawn in the background when needed.
 - **Area title.** The biome and district names in the game's own font (English).
@@ -84,6 +87,10 @@ All locations come from the game's own `global-metadata.dat` (IL2CPP v31) and `m
 | Exploration | `ExplorationSystem._mcExplorerComponent` `+0x48` → `worldRoomExplorationStates` (`Dictionary<string, WorldRoomExplorationState>`) |
 | Per room | `enteredZonesIds` `+0x50`, `enteredZDoorIDs` `+0x38`, `discoveredZDoorExplorationZoneIDs` `+0x28`, `discoveredSecretZones` `+0x48`, `gpeSpecialActivated` `+0x58` (all `List`) |
 | Last save room | `ExplorerComponent.lastUsedSaveRoomId` `+0x88` |
+| Current map | `ExplorerComponent.lastMainMapLevelId` `+0xA0` → `LevelID._guid` `+0x18` (matched with the map scene's `LevelMapContext.level`) |
+| Player components | `ExplorerComponent.selfEntity` `+0x20` → `Entity.componentCache` `+0x30` (`Dictionary<int, Component>`, filled in `Awake`) |
+| Map markers | `MapMarkersComponent._levelsMarkersData` `+0x28` (`Dictionary<LevelID, LevelMarkersData>`) → `markersData` `+0x18` → `MapMarkerData` (`position` `+0x14`, `markerTypeGuid` `+0x20`); the type guid is a `MapMarker_<Name>_ID` and its icon is `Map_MarkerSet_<Name>` |
+| Death spot | `DeathResultComponent.levelIdOfLastDeath` `+0x58`, `positionOfLastDeath` `+0x24` (`lastMainMapDeathPosition` `+0x30` when `lastDeathInFastTravelRoom` `+0x49`), shown like `LevelMapDeathSpotItem.Refresh` |
 
 Classes are checked by name before their fields are read, every read is bounded, and each step
 fails closed. Under NCE the data segment may sit at a constant shift from `main_base`; the

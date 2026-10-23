@@ -168,6 +168,7 @@ struct LevelMap {
     int number = 0;          // biome number (1 = Streets Poor)
     std::string world_name;  // "World_Biome_01_Streets_Poor"
     std::string level_name;  // "Paris Streets"
+    std::string level_guid;  // the map's LevelID (LevelMapContext.level), to match live data
     std::vector<Tile> tiles;
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0; // union of the tiles
     Texture data;       // LevelMap_<NN>_img slices
@@ -208,7 +209,9 @@ struct Font {
 
 struct Common {
     Sprite player;
-    std::map<std::string, Sprite> ui; // map screen frame, banner, buttons, zoom scale
+    std::map<std::string, Sprite> ui; // map screen frame, banner, buttons, zoom scale, markers
+    /// Map marker types: MapMarkerTypeID._guid -> its icon sprite in `ui` ("Map_MarkerSet_Cross").
+    std::map<std::string, std::string> marker_types;
     Font font;
     std::string log;
 };

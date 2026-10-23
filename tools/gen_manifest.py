@@ -133,6 +133,7 @@ rows = [
     ("FOG HERE", "t", "bc.fog.cur"),
     ("FOG KEYS", "t", "bc.fog.keys"),
     ("LAST SAVE", "t", "bc.save"),
+    ("MARKERS  DEATH SPOT", "t", "bc.marks"),
     ("WORLD BIOMES ROOMS", "iii", "bc.world.ready", "bc.world.biomes", "bc.world.rooms"),
     ("WORLD LOG", "t2", "bc.world.log"),
     ("LEVEL MAP  LOAD MS  DRAW MS", "iii", "bc.lm.state", "bc.lm.ms", "bc.render.ms"),

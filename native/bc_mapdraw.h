@@ -29,6 +29,16 @@ struct Exploration {
     /// By room id ("World_Biome_01_..._uid59").
     std::unordered_map<std::string, Room> rooms;
     std::string last_save_room;
+    /// Markers the player placed, on every map ("level guid" says which).
+    struct Marker {
+        std::string level_guid, type_guid;
+        float x = 0, y = 0;
+    };
+    std::vector<Marker> markers;
+    /// The last death spot (the map whose level guid matches shows it).
+    bool has_death = false;
+    std::string death_level_guid;
+    float death_x = 0, death_y = 0;
     /// No exploration data: reveal this room (the player is in it) and nothing else.
     std::string current_room_only;
     bool known = false; // false: nothing is revealed
@@ -66,8 +76,16 @@ View FitView(const bc_levelmap::LevelMap& map, int w, int h, double margin = 24)
 /// A view showing navigation zone `zone` (the whole map when it is not one).
 View FitZone(const bc_levelmap::LevelMap& map, int zone, int w, int h, double margin = 24);
 
+/// An icon that is not part of the map's own items (a marker, the death spot).
+struct ExtraIcon {
+    const bc_levelmap::Sprite* sprite = nullptr;
+    bc_levelmap::Icon icon; // position and scale; the rule is ignored
+};
+
 struct RenderOptions {
     int threads = 3;
+    /// Drawn over the map's icons, in order.
+    std::vector<ExtraIcon> extra;
     /// Icons are drawn at least this many pixels tall (the whole-area view is small).
     float min_icon_px = 0;
     /// Rooms in the game's "selected" palette (the vivid purple the map uses under its cursor)

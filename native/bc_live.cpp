@@ -3,6 +3,7 @@
 
 #include "bc_live.h"
 
+#include <cmath>
 #include <cstring>
 
 namespace bc_live {
@@ -58,6 +59,23 @@ constexpr u64 kWorldDataRooms = 0x50;
 constexpr u64 kExplorerStates = 0x30;
 constexpr u64 kExplorerLastMapPos = 0x90;
 constexpr u64 kExplorerLastSaveRoom = 0x88;
+constexpr u64 kExplorerLevelId = 0xA0;
+constexpr u64 kExplorerSelfEntity = 0x20;
+constexpr u64 kSavableGuid = 0x18;
+constexpr u64 kEntityComponentCache = 0x30;
+constexpr u64 kMarkersLevels = 0x28;
+constexpr u64 kLevelMarkersLevel = 0x10;
+constexpr u64 kLevelMarkersList = 0x18;
+constexpr u64 kMarkerId = 0x10;
+constexpr u64 kMarkerPosition = 0x14;
+constexpr u64 kMarkerTypeGuid = 0x20;
+constexpr u64 kDeathPosition = 0x24;
+constexpr u64 kDeathMainMapPosition = 0x30;
+constexpr u64 kDeathInFastTravelRoom = 0x49;
+constexpr u64 kDeathLevelId = 0x58;
+constexpr u32 kMaxComponents = 256;
+constexpr u32 kMaxMarkerLevels = 64;
+constexpr u32 kMaxMarkers = 512;
 constexpr u64 kStateDims = 0x10;
 constexpr u64 kStateChunks = 0x18;
 constexpr u64 kStateDiscoveredZDoorZones = 0x28;
@@ -350,6 +368,141 @@ bool Reader::FindSystems(const Memory& mem, State& out) {
     return true;
 }
 
+const std::string& Reader::ClassOf(const Memory& mem, u64 obj) {
+    static const std::string kNone;
+    Io io{mem};
+    u64 klass = 0;
+    if (!obj || !io.Get(obj, klass) || !klass || (klass & 7) != 0)
+        return kNone;
+    auto it = class_names_.find(klass);
+    if (it == class_names_.end()) {
+        u64 np = 0, nsp = 0;
+        std::string full;
+        if (io.Get(klass + kClassName, np) && io.Get(klass + kClassNamespace, nsp)) {
+            const std::string ns = io.CStr(nsp), nm = io.CStr(np);
+            full = ns.empty() ? nm : ns + "." + nm;
+        }
+        if (full.empty())
+            return kNone; // not a class (or not readable now): do not cache
+        if (class_names_.size() > 4096)
+            class_names_.clear();
+        it = class_names_.emplace(klass, full).first;
+    }
+    return it->second;
+}
+
+namespace {
+/// Entries of a Dictionary<K, V> whose key and value are references or ints: {int hashCode,
+/// int next, key at +8, value at +0x10}, stride 0x18. Freed entries have a null value.
+bool DictValues(const Io& io, u64 dict, u32 max, std::vector<std::pair<u64, u64>>& out) {
+    out.clear();
+    u64 entries = 0, cap = 0;
+    s32 count = 0;
+    if (!dict || !io.Get(dict + kDictCount, count) || count < 0 || static_cast<u32>(count) > max)
+        return false;
+    if (count == 0)
+        return true;
+    if (!io.Ptr(dict + kDictEntries, entries) || !io.Get(entries + kArrayLength, cap) ||
+        cap < static_cast<u64>(count))
+        return false;
+    std::vector<u64> raw(static_cast<std::size_t>(count) * 3);
+    if (!io.Bytes(entries + kArrayData, raw.data(), raw.size() * 8))
+        return false;
+    for (s32 i = 0; i < count; ++i) {
+        const u64 key = raw[static_cast<std::size_t>(i) * 3 + 1];
+        const u64 value = raw[static_cast<std::size_t>(i) * 3 + 2];
+        const s32 next = static_cast<s32>(raw[static_cast<std::size_t>(i) * 3] >> 32);
+        if (value && next >= -1)
+            out.emplace_back(key, value);
+    }
+    return true;
+}
+} // namespace
+
+void Reader::ReadPlayerComponents(const Memory& mem, u64 explorer, State& out) {
+    Io io{mem};
+    u64 entity = 0, cache = 0;
+    if (!io.Ptr(explorer + kExplorerSelfEntity, entity) ||
+        ClassOf(mem, entity) != "MotherBase.EntityFramework.Entity" ||
+        !io.Ptr(entity + kEntityComponentCache, cache))
+        return;
+    std::vector<std::pair<u64, u64>> comps;
+    if (!DictValues(io, cache, kMaxComponents, comps))
+        return;
+    const auto guid_of = [&](u64 level_id, std::string& g) {
+        u64 s = 0;
+        return level_id && io.Get(level_id + kSavableGuid, s) && io.String(s, g, 64) && !g.empty();
+    };
+    for (const auto& [key, comp] : comps) {
+        const std::string& cls = ClassOf(mem, comp);
+        if (cls == "MapMarkersComponent") {
+            u64 levels = 0;
+            std::vector<std::pair<u64, u64>> by_level;
+            if (!io.Get(comp + kMarkersLevels, levels))
+                continue;
+            if (levels && !DictValues(io, levels, kMaxMarkerLevels, by_level))
+                continue;
+            std::vector<MapMarker> markers;
+            bool ok = true;
+            for (const auto& [level_key, data] : by_level) {
+                u64 level = 0, list = 0, items = 0;
+                s32 size = 0;
+                std::string guid;
+                if (!io.Get(data + kLevelMarkersLevel, level) || !guid_of(level ? level : level_key, guid) ||
+                    !io.Get(data + kLevelMarkersList, list)) {
+                    ok = false;
+                    break;
+                }
+                if (!list)
+                    continue;
+                if (!io.Get(list + kListSize, size) || size < 0 || static_cast<u32>(size) > kMaxMarkers ||
+                    !io.Get(list + kListItems, items) || (size && !items)) {
+                    ok = false;
+                    break;
+                }
+                for (s32 i = 0; i < size && markers.size() < kMaxMarkers; ++i) {
+                    u64 m = 0, type = 0;
+                    MapMarker mk;
+                    float pos[2];
+                    if (!io.Get(items + kArrayData + 8 * static_cast<u64>(i), m) || !m ||
+                        !io.Get(m + kMarkerId, mk.id) || !io.Get(m + kMarkerPosition, pos) ||
+                        !io.Get(m + kMarkerTypeGuid, type) || !io.String(type, mk.type_guid, 64)) {
+                        ok = false;
+                        break;
+                    }
+                    if (!std::isfinite(pos[0]) || !std::isfinite(pos[1]))
+                        continue;
+                    mk.level_guid = guid;
+                    mk.x = pos[0];
+                    mk.y = pos[1];
+                    markers.push_back(std::move(mk));
+                }
+                if (!ok)
+                    break;
+            }
+            if (ok) {
+                out.markers = std::move(markers);
+                out.markers_ok = true;
+            }
+        } else if (cls == "DeathResultComponent") {
+            u64 level = 0;
+            float p[3], mp[3];
+            u8 fast = 0;
+            DeathSpot d;
+            if (io.Get(comp + kDeathLevelId, level) && io.Get(comp + kDeathPosition, p) &&
+                io.Get(comp + kDeathMainMapPosition, mp) && io.Get(comp + kDeathInFastTravelRoom, fast) &&
+                std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(mp[0]) && std::isfinite(mp[1])) {
+                // No level: the player has not died yet (the game shows no death spot).
+                d.known = level != 0 && guid_of(level, d.level_guid);
+                d.x = p[0], d.y = p[1];
+                d.main_x = mp[0], d.main_y = mp[1];
+                d.in_fast_travel_room = fast != 0;
+                out.death = std::move(d);
+            }
+        }
+    }
+}
+
 void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
     ++samples_;
     out = State{};
@@ -410,6 +563,11 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
             u64 last_save = 0;
             if (io.Get(explorer + kExplorerLastSaveRoom, last_save))
                 io.String(last_save, out.last_save_room, 160);
+            if (u64 level = 0, gs = 0; io.Get(explorer + kExplorerLevelId, level) && level &&
+                                        io.Get(level + kSavableGuid, gs))
+                io.String(gs, out.level_guid, 64);
+            if (with_fog)
+                ReadPlayerComponents(mem, explorer, out);
             u64 dict = 0, entries = 0, cap = 0;
             s32 count = 0;
             if (with_fog && io.Ptr(explorer + kExplorerStates, dict) &&
@@ -507,6 +665,20 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
                 if (ok) {
                     hash = Fnv(hash, out.last_save_room.data(), out.last_save_room.size());
                     ehash = Fnv(ehash, out.last_save_room.data(), out.last_save_room.size());
+                    // Markers and the death spot are drawn into the map too.
+                    for (const auto& m : out.markers) {
+                        ehash = Fnv(ehash, m.level_guid.data(), m.level_guid.size() + 1);
+                        ehash = Fnv(ehash, m.type_guid.data(), m.type_guid.size() + 1);
+                        ehash = Fnv(ehash, &m.x, 4);
+                        ehash = Fnv(ehash, &m.y, 4);
+                    }
+                    if (out.death.known) {
+                        const auto& d = out.death;
+                        ehash = Fnv(ehash, d.level_guid.data(), d.level_guid.size() + 1);
+                        ehash = Fnv(ehash, &d.x, 4);
+                        ehash = Fnv(ehash, &d.y, 4);
+                        ehash = Fnv(ehash, &d.in_fast_travel_room, 1);
+                    }
                     out.fog_ok = true;
                     out.fog_entries = count;
                     out.fog_hash = hash;

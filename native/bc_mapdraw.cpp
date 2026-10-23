@@ -401,18 +401,27 @@ std::vector<std::uint8_t> Render(const LevelMap& map, const Reveal& reveal, cons
                 reveal.field.Distance(static_cast<float>(fx0 + x * step), static_cast<float>(fy1 - y * step), far);
     });
 
-    // Icons on screen.
+    // Icons on screen: the map's own, then the extra ones.
     std::vector<PlacedIcon> icons;
-    for (std::size_t i = 0; i < map.icons.size(); ++i) {
-        if (i >= reveal.icon_visible.size() || !reveal.icon_visible[i])
-            continue;
-        const Icon& ic = map.icons[i];
-        const auto sit = map.sprites.find(ic.sprite);
-        if (sit == map.sprites.end())
-            continue;
+    const std::size_t n_icons = map.icons.size() + opt.extra.size();
+    for (std::size_t k = 0; k < n_icons; ++k) {
         PlacedIcon pi;
-        pi.icon = &ic;
-        pi.sprite = &sit->second;
+        if (k < map.icons.size()) {
+            if (k >= reveal.icon_visible.size() || !reveal.icon_visible[k])
+                continue;
+            const auto sit = map.sprites.find(map.icons[k].sprite);
+            if (sit == map.sprites.end())
+                continue;
+            pi.icon = &map.icons[k];
+            pi.sprite = &sit->second;
+        } else {
+            const ExtraIcon& e = opt.extra[k - map.icons.size()];
+            if (!e.sprite || e.sprite->tex.Empty())
+                continue;
+            pi.icon = &e.icon;
+            pi.sprite = e.sprite;
+        }
+        const Icon& ic = *pi.icon;
         const float hw = pi.sprite->height * std::fabs(ic.sy);
         if (opt.min_icon_px > 0 && hw <= 8.0f && hw * view.scale < opt.min_icon_px)
             pi.boost = static_cast<float>(opt.min_icon_px / (hw * view.scale));

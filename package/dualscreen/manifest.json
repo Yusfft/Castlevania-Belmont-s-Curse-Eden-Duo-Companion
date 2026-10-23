@@ -1050,43 +1050,21 @@
      ],
      "text_scale": 3,
      "color": "#FF9A8FB0",
-     "text": "WORLD BIOMES ROOMS"
+     "text": "MARKERS  DEATH SPOT"
     },
     {
-     "type": "value",
+     "type": "label",
      "rect": [
       420,
       722,
-      190,
+      800,
       29
      ],
-     "bind": "bc.world.ready",
      "text_scale": 3,
-     "color": "#FFE6E1F0"
-    },
-    {
-     "type": "value",
-     "rect": [
-      620,
-      722,
-      190,
-      29
-     ],
-     "bind": "bc.world.biomes",
-     "text_scale": 3,
-     "color": "#FFE6E1F0"
-    },
-    {
-     "type": "value",
-     "rect": [
-      820,
-      722,
-      190,
-      29
-     ],
-     "bind": "bc.world.rooms",
-     "text_scale": 3,
-     "color": "#FFE6E1F0"
+     "color": "#FFE6E1F0",
+     "bind_text": "bc.marks",
+     "wrap_width": 800,
+     "max_lines": 1
     },
     {
      "type": "label",
@@ -1098,13 +1076,61 @@
      ],
      "text_scale": 3,
      "color": "#FF9A8FB0",
+     "text": "WORLD BIOMES ROOMS"
+    },
+    {
+     "type": "value",
+     "rect": [
+      420,
+      751,
+      190,
+      29
+     ],
+     "bind": "bc.world.ready",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      620,
+      751,
+      190,
+      29
+     ],
+     "bind": "bc.world.biomes",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "value",
+     "rect": [
+      820,
+      751,
+      190,
+      29
+     ],
+     "bind": "bc.world.rooms",
+     "text_scale": 3,
+     "color": "#FFE6E1F0"
+    },
+    {
+     "type": "label",
+     "rect": [
+      24,
+      780,
+      380,
+      29
+     ],
+     "text_scale": 3,
+     "color": "#FF9A8FB0",
      "text": "WORLD LOG"
     },
     {
      "type": "label",
      "rect": [
       420,
-      751,
+      780,
       800,
       58
      ],
@@ -1118,7 +1144,7 @@
      "type": "label",
      "rect": [
       24,
-      809,
+      838,
       380,
       29
      ],
@@ -1130,7 +1156,7 @@
      "type": "value",
      "rect": [
       420,
-      809,
+      838,
       190,
       29
      ],
@@ -1142,7 +1168,7 @@
      "type": "value",
      "rect": [
       620,
-      809,
+      838,
       190,
       29
      ],
@@ -1154,7 +1180,7 @@
      "type": "value",
      "rect": [
       820,
-      809,
+      838,
       190,
       29
      ],
@@ -1166,7 +1192,7 @@
      "type": "label",
      "rect": [
       24,
-      838,
+      867,
       380,
       29
      ],
@@ -1178,7 +1204,7 @@
      "type": "label",
      "rect": [
       420,
-      838,
+      867,
       800,
       87
      ],
@@ -1192,7 +1218,7 @@
      "type": "label",
      "rect": [
       24,
-      925,
+      954,
       380,
       29
      ],
@@ -1204,7 +1230,7 @@
      "type": "value",
      "rect": [
       420,
-      925,
+      954,
       190,
       29
      ],
@@ -1216,7 +1242,7 @@
      "type": "value",
      "rect": [
       620,
-      925,
+      954,
       190,
       29
      ],
@@ -1228,7 +1254,7 @@
      "type": "value",
      "rect": [
       820,
-      925,
+      954,
       190,
       29
      ],

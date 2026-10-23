@@ -203,4 +203,66 @@ struct FakeGuest {
     }
 
     void SetLastSave(const std::string& room_id) { Put<std::uint64_t>(explorer_ + 0x88, String(kstring_, room_id)); }
+
+    struct FakeMarker {
+        std::string type_guid;
+        float x, y;
+    };
+    /// The explorer's entity with its MapMarkersComponent (markers on level `level_guid`) and
+    /// DeathResultComponent (a death at `death_x, death_y` there when `died`).
+    void SetMapState(const std::string& level_guid, const std::vector<FakeMarker>& markers, bool died,
+                     float death_x, float death_y) {
+        const std::uint64_t level = Obj(Klass("", "LevelID"), 0x28);
+        Put<std::uint64_t>(level + 0x18, String(kstring_, level_guid));
+        Put<std::uint64_t>(explorer_ + 0xA0, level);
+        const std::uint64_t entity = Obj(Klass("MotherBase.EntityFramework", "Entity"), 0x2E0);
+        Put<std::uint64_t>(explorer_ + 0x20, entity);
+        // MapMarkersComponent -> Dictionary<LevelID, LevelMarkersData> -> List<MapMarkerData>.
+        const std::uint64_t kmarker = Klass("", "MapMarkerData");
+        std::vector<std::uint64_t> objs;
+        for (std::size_t i = 0; i < markers.size(); ++i) {
+            const std::uint64_t m = Obj(kmarker, 0x28);
+            Put<std::int32_t>(m + 0x10, static_cast<std::int32_t>(i));
+            Put<float>(m + 0x14, markers[i].x);
+            Put<float>(m + 0x18, markers[i].y);
+            Put<std::uint64_t>(m + 0x20, String(kstring_, markers[i].type_guid));
+            objs.push_back(m);
+        }
+        const std::uint64_t list = Obj(klist_, 0x28);
+        Put<std::uint64_t>(list + 0x10, Array<std::uint64_t>(karray_, objs));
+        Put<std::int32_t>(list + 0x18, static_cast<std::int32_t>(objs.size()));
+        const std::uint64_t lmd = Obj(Klass("", "LevelMarkersData"), 0x28);
+        Put<std::uint64_t>(lmd + 0x10, level);
+        Put<std::uint64_t>(lmd + 0x18, list);
+        const auto dict = [&](const std::vector<std::pair<std::uint64_t, std::uint64_t>>& kv) {
+            const std::uint64_t entries = Obj(karray_, 0x20 + 0x18 * (kv.size() + 1));
+            Put<std::uint64_t>(entries + 0x18, kv.size() + 1);
+            // Entry 0 freed (next = -3), then the live ones.
+            Put<std::int32_t>(entries + 0x20 + 4, -3);
+            for (std::size_t i = 0; i < kv.size(); ++i) {
+                const std::uint64_t e = entries + 0x20 + 0x18 * (i + 1);
+                Put<std::int32_t>(e, 77 + static_cast<std::int32_t>(i));
+                Put<std::int32_t>(e + 4, -1);
+                Put<std::uint64_t>(e + 8, kv[i].first);
+                Put<std::uint64_t>(e + 16, kv[i].second);
+            }
+            const std::uint64_t d = Obj(Klass("System.Collections.Generic", "Dictionary`2"), 0x50);
+            Put<std::uint64_t>(d + 0x18, entries);
+            Put<std::int32_t>(d + 0x20, static_cast<std::int32_t>(kv.size() + 1));
+            return d;
+        };
+        const std::uint64_t mc = Obj(Klass("", "MapMarkersComponent"), 0x40);
+        Put<std::uint64_t>(mc + 0x28, dict({{level, lmd}}));
+        const std::uint64_t death = Obj(Klass("", "DeathResultComponent"), 0x60);
+        if (died) {
+            Put<float>(death + 0x24, death_x);
+            Put<float>(death + 0x28, death_y);
+            Put<float>(death + 0x30, death_x);
+            Put<float>(death + 0x34, death_y);
+            Put<std::uint64_t>(death + 0x40, level);
+            Put<std::uint64_t>(death + 0x58, level);
+        }
+        // componentCache: Dictionary<int, Component>, keyed by type hash.
+        Put<std::uint64_t>(entity + 0x30, dict({{0x1111, explorer_}, {0x2222, mc}, {0x3333, death}}));
+    }
 };
