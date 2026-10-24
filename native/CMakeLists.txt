@@ -20,7 +20,7 @@ foreach(header IN ITEMS dsmod_module_abi.h dsmod_module_extensions.h modules/dsm
     endif()
 endforeach()
 
-set(BC_SOURCES bc_unity.cpp bc_world.cpp bc_render.cpp bc_live.cpp bc_tex.cpp bc_levelmap.cpp bc_mapdraw.cpp bc_ui.cpp)
+set(BC_SOURCES bc_unity.cpp bc_world.cpp bc_render.cpp bc_live.cpp bc_tex.cpp bc_levelmap.cpp bc_mapdraw.cpp bc_ui.cpp bc_cards.cpp)
 
 add_library(dsmod-bc SHARED 0100BA4026E94000.cpp ${BC_SOURCES})
 target_compile_features(dsmod-bc PRIVATE cxx_std_20)
