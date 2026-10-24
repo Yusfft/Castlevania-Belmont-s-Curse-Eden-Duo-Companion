@@ -152,6 +152,8 @@ struct State {
     bool ctx_ok = false, ctx_paused = false;
     bool gs_ok = false, gs_pause = false, gs_pause_playtime = false;
     std::string gs_maps; // the active state's action maps, comma separated
+    /// GameStateManager.loadingState is the active state (a scene is loading).
+    bool gs_loading = false;
     /// A menu or pause screen is open: the game is paused and the state takes UI input.
     bool paused = false;
 

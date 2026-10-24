@@ -73,9 +73,13 @@ std::vector<std::uint8_t> Prompt(const bc_levelmap::Common& c, const std::string
 /// The game-over card: the death icon, the game's ornament and "Game Over", with a glow of
 /// strength `glow` (0..1) around them.
 std::vector<std::uint8_t> GameOver(const bc_levelmap::Common& c, float glow, int w, int h);
-/// The page before a save is loaded: the game's painted biome card (Common::ui "menu_card")
-/// centred, over a blurred, darkened copy of itself filling the page. Empty when there is no card.
-std::vector<std::uint8_t> MenuArt(const bc_levelmap::Common& c, int w, int h);
+/// A page with one of the game's painted biome cards (bc_cards): the card centred, `card_h` of
+/// the page tall from `card_top` (fractions of the height), over a blurred, darkened copy of
+/// itself filling the page. Empty when the card is.
+std::vector<std::uint8_t> MenuArt(const bc_levelmap::Sprite& card, int w, int h, float card_h = 0.84f,
+                                  float card_top = 0.05f);
+/// "Loading, be patient" and `dots` dots (0..3), centred for the full line so it does not move.
+std::vector<std::uint8_t> Loading(const bc_levelmap::Common& c, int dots, float size, int w, int h);
 /// "Paused" between two ornaments.
 std::vector<std::uint8_t> Paused(const bc_levelmap::Common& c, int w, int h);
 
