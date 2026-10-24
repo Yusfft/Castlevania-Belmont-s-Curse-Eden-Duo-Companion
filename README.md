@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.5.5)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.6.0)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -50,6 +50,9 @@ from the player's own romfs and drawn by the native module.
 - **Before a save is loaded** (the game's own menus): one of the game's painted biome cards (the
   save screen's `T_UI_Save_BiomeCards` atlas, one picked at random each session) over a blurred
   copy of itself, "Press A to confirm" at the bottom and the mod's version at the bottom right.
+- **Loading.** While the game loads a scene (its loading state on top for 0.4 s or more) or the
+  map is not ready yet, the card of the current biome and "Loading, be patient" with its dots
+  running 1-2-3. The zoom and pin buttons show only over the map.
 - **Inventory page** (Debug → Inventory): what the module reads of the inventory, level and stats, the first step of the game-menu pages.
 - **Debug page.** The Debug button (or hold the area name): every step of the live memory chain
   and the map loader's log.
@@ -81,7 +84,8 @@ The level map of biome `<NN>` lives in its map scene
 
 Readers: `native/bc_unity.*` (bounds-checked UnityFS / SerializedFile / type-tree reader with
 on-demand LZ4 block reads and managed references), `bc_tex.*` (RGBA, Alpha8, BC1/BC3/BC4 and
-the Switch block-linear layout; ASTC through Eden's decoder), `bc_levelmap.*` (the loader).
+the Switch block-linear layout; ASTC through Eden's decoder), `bc_levelmap.*` (the loader), `bc_cards.*` (the save screen's biome cards, read on
+demand for the title and loading pages).
 Drawing: `bc_shade.h` (the map shading), `bc_fog.h` (fog distance field), `bc_mapdraw.*`
 (tiles, fog, icons, marker), `bc_ui.*` (frame, banner, zoom scale, buttons and text from the
 map screen's own sprites: `Map_Background`, `Map_InfoParchment`, `cartouche`, `Map_Scale*`). The shading and fog maths were checked numerically against
@@ -103,7 +107,8 @@ All locations come from the game's own `global-metadata.dat` (IL2CPP v31) and `m
 | Player position | `ExplorerComponent.lastMainMapPosition` `+0x90` (Vector3, world units), written every frame by `ExplorationSystem.TryUpdateMainMapPosition` from the player's transform |
 | Exploration | `ExplorationSystem._mcExplorerComponent` `+0x48` → `worldRoomExplorationStates` (`Dictionary<string, WorldRoomExplorationState>`) |
 | Per room | `enteredZonesIds` `+0x50`, `enteredZDoorIDs` `+0x38`, `discoveredZDoorExplorationZoneIDs` `+0x28`, `discoveredSecretZones` `+0x48`, `gpeSpecialActivated` `+0x58` (all `List`) |
-| Pause | `SystemManager._context` `+0x20` → `EntityContext._contextPaused` `+0x68`; the active state: `GameStateManager` (TypeInfo slot `main+0x6BDBA10`) `._instance._states` `+0xA0` top → `+0x18` → `EditorParameteredGameState` (`_pauseEntityContext` `+0x18`, `_activeActionMaps` `+0x28`) |
+| Pause | `SystemManager._context` `+0x20` → `EntityContext._contextPaused` `+0x68`; the active state: `GameStateManager` (TypeInfo slot `main+0x6D42540`; `main+0x6BDBA10` only holds that slot's address) `._instance._states` `+0xA0` top → `+0x18` → `EditorParameteredGameState` (`_pauseEntityContext` `+0x18`, `_activeActionMaps` `+0x28`) |
+| Loading | the top state is `GameStateManager.loadingState` `+0x68` |
 | Inventory | `InventoryComponent.inventory` `+0x28` → `Inventory` (`_itemsInInventory` `+0x20`, `_equippedWeapon` `+0x28`, `_equippedSkin` `+0x30`, `_equippedSpell` `+0x38`, `_equippedCharms` `+0x40`); `ItemData` `itemID` `+0x20`, `itemType` `+0x28`, `itemDisplayName` `+0x30` → key `+0x30` |
 | Level and stats | `ExperienceComponent._currentLevel` `+0x78` (StatRef → `_statObject` `+0x18`); `StatsStateComponent.CurrentStats` `+0x28` (`Dictionary<Type, StatObject>`; `baseValue` `+0x18`, `modifiers` `+0x20`); stat names from the type's definition in the loaded metadata |
 | Last save room | `ExplorerComponent.lastUsedSaveRoomId` `+0x88` |
