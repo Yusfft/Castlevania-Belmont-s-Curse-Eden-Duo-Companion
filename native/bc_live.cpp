@@ -18,7 +18,9 @@ using s64 = std::int64_t;
 // ---- build-pinned locations (main-relative) ----
 constexpr u64 kMetadataRegistration = 0x6A95908; // Il2CppMetadataRegistration
 constexpr u64 kSystemManagerTypeInfo = 0x6D47368;
-constexpr u64 kGameStateManagerTypeInfo = 0x6BDBA10; // GameStateManager::GetInstance
+// GameStateManager's TypeInfo slot (metadata usage 0x2000C625). GameStateManager::GetInstance
+// reaches it through a pointer at 0x6BDBA10, which holds the slot's address, not the class.
+constexpr u64 kGameStateManagerTypeInfo = 0x6D42540;
 constexpr u64 kSystemManagerEncoded = 0x200117D1; // unresolved metadata-usage token (TypeInfo #35816)
 
 // Il2CppMetadataRegistration counts for this build (entries 0, 2, 6, 10, 12).
@@ -97,6 +99,7 @@ constexpr u32 kMetaSanity = 0xFAB11BAF;
 constexpr u32 kMaxItems = 1024;
 constexpr u64 kSysMgrContext = 0x20;
 constexpr u64 kContextPaused = 0x68;
+constexpr u64 kGsmLoadingState = 0x68;
 constexpr u64 kGsmStates = 0xA0;
 constexpr u64 kStackArray = 0x10;
 constexpr u64 kStackSize = 0x18;
@@ -730,7 +733,12 @@ void Reader::ReadPause(const Memory& mem, State& out) {
         !io.Ptr(gsm + kGsmStates, stack) || !io.Get(stack + kStackSize, size) || size <= 0 || size > 64 ||
         !io.Ptr(stack + kStackArray, arr) || !io.Get(arr + kArrayLength, len) || len < static_cast<u64>(size) ||
         !io.Ptr(arr + kArrayData + 8 * static_cast<u64>(size - 1), entry) ||
-        !io.Ptr(entry + kStateEntryState, state) || ClassOf(mem, state) != "EditorParameteredGameState")
+        !io.Ptr(entry + kStateEntryState, state))
+        return;
+    // The game's loading state (GameStateManager.loadingState) on top: a scene is loading.
+    u64 loading_state = 0;
+    out.gs_loading = io.Ptr(gsm + kGsmLoadingState, loading_state) && loading_state == state;
+    if (ClassOf(mem, state) != "EditorParameteredGameState")
         return;
     u8 pause = 0, play = 0;
     if (!io.Get(state + kGameStatePause, pause) || !io.Get(state + kGameStatePausePlaytime, play))
