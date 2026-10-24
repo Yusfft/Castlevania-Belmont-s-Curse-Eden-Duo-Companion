@@ -43,6 +43,7 @@
 #include <utility>
 #include <vector>
 
+#include "bc_cards.h"
 #include "bc_levelmap.h"
 #include "bc_live.h"
 #include "bc_mapdraw.h"
@@ -58,7 +59,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.5.5";
+constexpr const char* kVersion = "0.6.0";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -110,6 +111,12 @@ constexpr int kGameOverW = 760, kGameOverH = 420;
 constexpr int kPausedW = 600, kPausedH = 200;
 constexpr int kPromptW = 700, kPromptH = 70;
 constexpr int kVersionW = 460, kVersionH = 50;
+// The loading page: the biome's card, and "Loading, be patient" with 1-2-3 dots under it (a new
+// dot every kLoadingDotMs). The game's loading state shows it once it has held
+// kLoadingHoldSeconds, so a quick room change does not flash it.
+constexpr int kLoadingW = 900, kLoadingH = 80;
+constexpr int kLoadingDotMs = 420;
+constexpr double kLoadingHoldSeconds = 0.4;
 // The pause screen's blurred map: the window drawn this many times smaller, stretched back.
 constexpr int kBlurDiv = 6;
 constexpr double kRedrawSeconds = 6.0;
@@ -319,6 +326,10 @@ struct Instance {
     std::shared_ptr<bc_levelmap::Assets> assets;
     std::shared_ptr<const bc_levelmap::Names> names;
     std::shared_ptr<const bc_levelmap::Common> common;
+    // Readers of `assets` after the first load (level maps, cards) take turns.
+    std::mutex assets_use;
+    // The title page's card, picked when the module starts.
+    int title_card = 0;
 
     // Level maps, loaded on request by the loader thread (two kept).
     std::mutex lm_mutex;
@@ -379,6 +390,14 @@ struct Instance {
     std::chrono::steady_clock::time_point game_over_at{};
     bool game_over_seen = false;
     std::string blur_key, blur_area_key;
+    // Loading page (tick thread).
+    bool game_loading = false;
+    std::chrono::steady_clock::time_point game_loading_since{};
+    int loading_card = -1;
+    // Debug and inventory texts, rebuilt when the slower reads run (once a second) and
+    // published from the cache in between.
+    std::vector<std::pair<std::string, std::string>> slow_texts;
+    std::vector<std::pair<std::string, s64>> slow_ints;
     std::chrono::steady_clock::time_point last_window{};
     double cost_us = 0;
 
@@ -511,6 +530,7 @@ struct Instance {
             std::string err;
             std::string load_log;
             try {
+                std::lock_guard use(assets_use);
                 if (a && n)
                     m = bc_levelmap::LoadLevelMap(*a, Codecs(), *n, want, &load_log);
                 if (a)
@@ -642,6 +662,8 @@ void* Create(const EdenDsmodHostApi* host, const char*) {
             return nullptr;
         auto* inst = new Instance();
         inst->host = *host;
+        inst->title_card = static_cast<int>(
+            static_cast<u64>(std::chrono::steady_clock::now().time_since_epoch().count()) / 1000 % bc_cards::kCount);
         {
             std::lock_guard lock(inst->pin_mutex);
             LoadPins(inst);
@@ -749,27 +771,6 @@ void PublishDebug(const EdenDsmodHostApi* h, const bc_live::State& s) {
     PublishI(h, "bc.fog.ok", s.fog_ok);
     PublishI(h, "bc.fog.n", s.fog_entries);
     PublishI(h, "bc.fog.matched", s.fog_matched);
-    std::string keys, cur;
-    int shown = 0;
-    std::size_t zones = 0;
-    for (const auto& r : s.fog) {
-        zones += r.entered_zones.size();
-        if (shown < 3) {
-            keys += (shown ? " , " : "") + r.key;
-            ++shown;
-        }
-        if (r.key == s.room_id && !s.room_id.empty()) {
-            cur = "zones";
-            for (const s32 z : r.entered_zones)
-                cur += " " + std::to_string(z);
-            cur += " doors";
-            for (const s32 z : r.entered_zdoors)
-                cur += " " + std::to_string(z);
-        }
-    }
-    PublishI(h, "bc.fog.zones", static_cast<s64>(zones));
-    PublishT(h, "bc.fog.keys", keys);
-    PublishT(h, "bc.fog.cur", cur);
     PublishT(h, "bc.save", s.last_save_room);
     PublishT(h, "bc.level", s.level_guid);
     PublishI(h, "bc.markers.ok", s.markers_ok);
@@ -814,8 +815,35 @@ std::shared_ptr<const std::vector<Pin>> PinSnapshot(Instance* inst, u64 rev) {
     return v;
 }
 
+/// The exploration summary for the debug page (walks every explored room).
+void BuildFogTexts(const bc_live::State& s, std::vector<std::pair<std::string, std::string>>& texts,
+                   std::vector<std::pair<std::string, s64>>& ints) {
+    std::string keys, cur;
+    int shown = 0;
+    std::size_t zones = 0;
+    for (const auto& r : s.fog) {
+        zones += r.entered_zones.size();
+        if (shown < 3) {
+            keys += (shown ? " , " : "") + r.key;
+            ++shown;
+        }
+        if (r.key == s.room_id && !s.room_id.empty()) {
+            cur = "zones";
+            for (const s32 z : r.entered_zones)
+                cur += " " + std::to_string(z);
+            cur += " doors";
+            for (const s32 z : r.entered_zdoors)
+                cur += " " + std::to_string(z);
+        }
+    }
+    ints.emplace_back("bc.fog.zones", static_cast<s64>(zones));
+    texts.emplace_back("bc.fog.keys", std::move(keys));
+    texts.emplace_back("bc.fog.cur", std::move(cur));
+}
+
 /// The inventory, level and stats, as text for the inventory debug page.
-void PublishInventory(Instance* inst, const EdenDsmodHostApi* h, const bc_live::State& s) {
+void BuildInventoryTexts(Instance* inst, const bc_live::State& s, std::vector<std::pair<std::string, std::string>>& texts,
+                         std::vector<std::pair<std::string, s64>>& ints) {
     std::shared_ptr<const bc_levelmap::Names> names;
     {
         std::lock_guard lock(inst->world_mutex);
@@ -828,15 +856,15 @@ void PublishInventory(Instance* inst, const EdenDsmodHostApi* h, const bc_live::
         std::string n = names ? names->strings.Get(it.name_key) : std::string{};
         return n.empty() ? it.id : n;
     };
-    PublishI(h, "bc.inv.ok", inv.ok);
+    ints.emplace_back("bc.inv.ok", inv.ok);
     char b[160];
     std::snprintf(b, sizeof b, "LVL %.0f  XP %.0f / %.0f%s", inv.level, inv.xp, inv.xp_max, inv.level_ok ? "" : "  (?)");
-    PublishT(h, "bc.inv.level", b);
-    PublishT(h, "bc.inv.eq", "Weapon: " + name(inv.weapon) + "  |  Arcana: " + name(inv.spell) + "  |  Skin: " + name(inv.skin));
+    texts.emplace_back("bc.inv.level", b);
+    texts.emplace_back("bc.inv.eq", "Weapon: " + name(inv.weapon) + "  |  Arcana: " + name(inv.spell) + "  |  Skin: " + name(inv.skin));
     std::string relics;
     for (const auto& c : inv.charms)
         relics += (relics.empty() ? "" : ", ") + name(c);
-    PublishT(h, "bc.inv.relics", relics.empty() ? "-" : relics);
+    texts.emplace_back("bc.inv.relics", relics.empty() ? "-" : relics);
     // Owned items by type.
     static const char* const kKeys[] = {"", "bc.inv.t1", "bc.inv.t2", "bc.inv.t3", "bc.inv.t4", "bc.inv.t5", "bc.inv.t6", "bc.inv.t7"};
     std::string lists[8];
@@ -848,7 +876,7 @@ void PublishInventory(Instance* inst, const EdenDsmodHostApi* h, const bc_live::
             lists[t] += (lists[t].empty() ? "" : ", ") + name(it);
     }
     for (int t = 1; t <= 7; ++t)
-        PublishT(h, kKeys[t], std::to_string(counts[t]) + ": " + lists[t]);
+        texts.emplace_back(kKeys[t], std::to_string(counts[t]) + ": " + lists[t]);
     std::string stats;
     for (const auto& st : inv.stats) {
         char sb[96];
@@ -857,7 +885,7 @@ void PublishInventory(Instance* inst, const EdenDsmodHostApi* h, const bc_live::
         if (stats.size() < 900)
             stats += (stats.empty() ? "" : ", ") + std::string(sb);
     }
-    PublishT(h, "bc.inv.stats", std::to_string(inv.stats.size()) + ": " + stats);
+    texts.emplace_back("bc.inv.stats", std::to_string(inv.stats.size()) + ": " + stats);
 }
 
 void PublishPins(Instance* inst, const EdenDsmodHostApi* h) {
@@ -1236,7 +1264,17 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             inst->tap_view_ok = false;
         }
         PublishPins(inst, h);
-        PublishInventory(inst, h, s);
+        if (with_fog || inst->slow_texts.empty()) {
+            // The exploration and inventory reads ran this sample (or nothing is cached yet).
+            inst->slow_texts.clear();
+            inst->slow_ints.clear();
+            BuildFogTexts(s, inst->slow_texts, inst->slow_ints);
+            BuildInventoryTexts(inst, s, inst->slow_texts, inst->slow_ints);
+        }
+        for (const auto& [k, v] : inst->slow_texts)
+            PublishT(h, k.c_str(), v);
+        for (const auto& [k, v] : inst->slow_ints)
+            PublishI(h, k.c_str(), v);
         {
             std::lock_guard lock(inst->pin_mutex);
             PublishT(h, "bc.savepins", s.last_save_room + "  | pins " + inst->pin_store_status);
@@ -1303,8 +1341,40 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             PublishT(h, "bc.ui.zoom", zk);
             PublishI(h, "bc.ui.ok", ui_ok);
             PublishI(h, "bc.ui.plain", !ui_ok);
-            PublishI(h, "bc.ui.wait", ui_ok && !(follow || area));
             PublishI(h, "bc.ui.waitplain", !ui_ok && !(follow || area));
+
+            // Title page (no save loaded) and loading page (the game loading a scene, or the map
+            // not shown yet in game). Their image keys appear only once the art can be drawn.
+            const auto now = std::chrono::steady_clock::now();
+            if (s.gs_loading && !inst->game_loading)
+                inst->game_loading_since = now;
+            inst->game_loading = s.gs_loading;
+            const bool game_loading =
+                s.gs_loading && std::chrono::duration<double>(now - inst->game_loading_since).count() >= kLoadingHoldSeconds;
+            const bool loading = ui_ok && (game_loading || (s.room_ok && !(follow || area)));
+            const bool title = ui_ok && !s.room_ok && !loading;
+            if (s.room_ok) {
+                if (const int card = bc_cards::ForWorld(s.world_name); card >= 0)
+                    inst->loading_card = card;
+            }
+            const int load_card = inst->loading_card >= 0 ? inst->loading_card : inst->title_card;
+            char key[48];
+            std::snprintf(key, sizeof key, "module:bc:ui:menuart:%d", inst->title_card);
+            PublishT(h, "bc.ui.art", ui_ok ? key : "");
+            std::snprintf(key, sizeof key, "module:bc:ui:loadart:%d", load_card);
+            PublishT(h, "bc.ui.lart", ui_ok ? key : "");
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+            std::snprintf(key, sizeof key, "module:bc:ui:loadtxt:%d", static_cast<int>(ms / kLoadingDotMs % 3) + 1);
+            PublishT(h, "bc.ui.ltxt", ui_ok ? key : "");
+            PublishI(h, "bc.ui.title", title);
+            PublishI(h, "bc.ui.wait", title); // 0.5 manifests
+            PublishI(h, "bc.ui.load", loading);
+            const bool ingame = ui_ok && !loading && !title;
+            PublishI(h, "bc.ui.ingame", ingame);
+            if (!ingame && ui_ok) {
+                // Pins are put on the map only: the symbols and the tap layer wait for it.
+                PublishI(h, "bc.pin.mode", 0);
+            }
         }
         PublishI(h, "bc.map.follow", follow);
         PublishI(h, "bc.map.area", area);
@@ -1573,11 +1643,40 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
     } else if (int f = 0; std::sscanf(what.c_str(), "gameover:%d", &f) == 1) {
         w = kGameOverW, h = kGameOverH;
         px = bc_ui::GameOver(*common, kGameOverGlow[std::clamp(f, 0, kGameOverFrames - 1)], w, h);
-    } else if (what == "menuart") {
+    } else if (int card = -1; what == "menuart" || std::sscanf(what.c_str(), "menuart:%d", &card) == 1 ||
+                                std::sscanf(what.c_str(), "loadart:%d", &card) == 1) {
+        // A page of the game's painted cards: the title page (big card) or the loading page
+        // (the card higher up, the loading line under it).
+        const bool load = what.rfind("loadart:", 0) == 0;
+        if (card < 0)
+            card = inst->title_card;
+        std::shared_ptr<bc_levelmap::Assets> assets;
+        {
+            std::lock_guard lock(inst->world_mutex);
+            assets = inst->assets;
+        }
+        if (!assets)
+            return false;
+        std::optional<bc_levelmap::Sprite> sprite;
+        std::string err;
+        {
+            std::lock_guard use(inst->assets_use);
+            sprite = bc_cards::Load(*assets, inst->Codecs(), card, &err);
+        }
+        if (!sprite) {
+            // Shown on the debug page (world log), once per reason.
+            std::lock_guard lock(inst->world_mutex);
+            if (inst->world_log.find(err) == std::string::npos)
+                inst->world_log += "card " + std::to_string(card) + ": " + err + "\n";
+            return false;
+        }
         w = kCanvasW, h = kCanvasH;
-        px = bc_ui::MenuArt(*common, w, h);
+        px = load ? bc_ui::MenuArt(*sprite, w, h, 0.68f, 0.07f) : bc_ui::MenuArt(*sprite, w, h);
         if (px.empty())
             return false;
+    } else if (int dots = 0; std::sscanf(what.c_str(), "loadtxt:%d", &dots) == 1) {
+        w = kLoadingW, h = kLoadingH;
+        px = bc_ui::Loading(*common, dots, 40, w, h);
     } else if (what == "paused") {
         w = kPausedW, h = kPausedH;
         px = bc_ui::Paused(*common, w, h);
