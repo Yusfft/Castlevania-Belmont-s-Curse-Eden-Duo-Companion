@@ -494,9 +494,9 @@ std::vector<std::uint8_t> GameOver(const bc_levelmap::Common& c, float glow, int
     return cv.Encode();
 }
 
-std::vector<std::uint8_t> MenuArt(const bc_levelmap::Common& c, int w, int h) {
-    const Sprite* card = Ui(c, "menu_card");
-    if (!card)
+std::vector<std::uint8_t> MenuArt(const Sprite& card_sprite, int w, int h, float card_h, float card_top) {
+    const Sprite* card = &card_sprite;
+    if (card->tex.Empty())
         return {};
     const float fw = static_cast<float>(w), fh = static_cast<float>(h);
     const float aw = static_cast<float>(card->tex.w), ah = static_cast<float>(card->tex.h);
@@ -541,8 +541,8 @@ std::vector<std::uint8_t> MenuArt(const bc_levelmap::Common& c, int w, int h) {
     Canvas cv(w, h);
     cv.Blit(bg, 0, 0, fw, fh, {0.38f, 0.36f, 0.40f, 1});
     // The card itself, with a soft shadow and a thin gold edge.
-    const float ch = 0.84f * fh, cw = ch * aw / ah;
-    const float x0 = (fw - cw) / 2, y0 = 0.05f * fh;
+    const float ch = card_h * fh, cw = ch * aw / ah;
+    const float x0 = (fw - cw) / 2, y0 = card_top * fh;
     for (int y = static_cast<int>(y0 - 30); y < static_cast<int>(y0 + ch + 30); ++y) {
         for (int x = static_cast<int>(x0 - 30); x < static_cast<int>(x0 + cw + 30); ++x) {
             const float dx = std::max({x0 - static_cast<float>(x), static_cast<float>(x) - (x0 + cw), 0.0f});
@@ -572,6 +572,19 @@ std::vector<std::uint8_t> MenuArt(const bc_levelmap::Common& c, int w, int h) {
         for (int x = 0; x < w; ++x)
             cv.Darken(x, y, 0.75f * t * t);
     }
+    return cv.Encode();
+}
+
+std::vector<std::uint8_t> Loading(const bc_levelmap::Common& c, int dots, float size, int w, int h) {
+    Canvas cv(w, h);
+    const std::string text = "Loading, be patient";
+    // Placed for the full line, so the text stays put while the dots come and go.
+    const float full = Canvas::TextWidth(c.font, text + "...", size);
+    const float x = (static_cast<float>(w) - full) / 2;
+    const float base = 0.5f * static_cast<float>(h) + 0.35f * size;
+    const Vec4 col{0.80f, 0.75f, 0.66f, 1};
+    const float tw = cv.Text(c.font, text, x, base, size, col);
+    cv.Text(c.font, std::string(static_cast<std::size_t>(std::clamp(dots, 0, 3)), '.'), x + tw, base, size, col);
     return cv.Encode();
 }
 
