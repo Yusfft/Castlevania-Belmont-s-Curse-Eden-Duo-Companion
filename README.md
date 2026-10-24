@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.5.3)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.5.5)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -38,9 +38,10 @@ from the player's own romfs and drawn by the native module.
   are drawn sharper than the game's 4-texels-per-unit map texture would give.
 - **Pins.** The Pin button opens three symbols (the game's marker art) under it; with one picked,
   a tap on the map puts a pin there. Tapping a pin with another symbol picked changes it, with the
-  same symbol takes it away. Up to 24 pins, kept across sessions in the runtime's persisted flags
-  (`persist_flags`, outside the package and the game's save). They are the page's own: the game's
-  map does not show them.
+  same symbol takes it away. Up to 24 pins, kept across sessions in a small text file of the
+  module's own (`dualscreen/persist/0100BA4026E94000/belmonts-curse-map-pins.txt` in the
+  emulator's data folder; on Android the app's private files folder). They are the page's own:
+  the game's map does not show them.
 - **Game over.** When the player dies the page darkens and a card with the game's death icon and
   ornament glows up and fades (`DeathResultComponent.hasJustDied`, set by
   `DeathManagementSystem` the moment of death).
@@ -49,6 +50,7 @@ from the player's own romfs and drawn by the native module.
 - **Before a save is loaded** (the game's own menus): one of the game's painted biome cards (the
   save screen's `T_UI_Save_BiomeCards` atlas, one picked at random each session) over a blurred
   copy of itself, "Press A to confirm" at the bottom and the mod's version at the bottom right.
+- **Inventory page** (Debug → Inventory): what the module reads of the inventory, level and stats, the first step of the game-menu pages.
 - **Debug page.** The Debug button (or hold the area name): every step of the live memory chain
   and the map loader's log.
 
@@ -102,6 +104,8 @@ All locations come from the game's own `global-metadata.dat` (IL2CPP v31) and `m
 | Exploration | `ExplorationSystem._mcExplorerComponent` `+0x48` → `worldRoomExplorationStates` (`Dictionary<string, WorldRoomExplorationState>`) |
 | Per room | `enteredZonesIds` `+0x50`, `enteredZDoorIDs` `+0x38`, `discoveredZDoorExplorationZoneIDs` `+0x28`, `discoveredSecretZones` `+0x48`, `gpeSpecialActivated` `+0x58` (all `List`) |
 | Pause | `SystemManager._context` `+0x20` → `EntityContext._contextPaused` `+0x68`; the active state: `GameStateManager` (TypeInfo slot `main+0x6BDBA10`) `._instance._states` `+0xA0` top → `+0x18` → `EditorParameteredGameState` (`_pauseEntityContext` `+0x18`, `_activeActionMaps` `+0x28`) |
+| Inventory | `InventoryComponent.inventory` `+0x28` → `Inventory` (`_itemsInInventory` `+0x20`, `_equippedWeapon` `+0x28`, `_equippedSkin` `+0x30`, `_equippedSpell` `+0x38`, `_equippedCharms` `+0x40`); `ItemData` `itemID` `+0x20`, `itemType` `+0x28`, `itemDisplayName` `+0x30` → key `+0x30` |
+| Level and stats | `ExperienceComponent._currentLevel` `+0x78` (StatRef → `_statObject` `+0x18`); `StatsStateComponent.CurrentStats` `+0x28` (`Dictionary<Type, StatObject>`; `baseValue` `+0x18`, `modifiers` `+0x20`); stat names from the type's definition in the loaded metadata |
 | Last save room | `ExplorerComponent.lastUsedSaveRoomId` `+0x88` |
 | Current map | `ExplorerComponent.lastMainMapLevelId` `+0xA0` → `LevelID._guid` `+0x18` (matched with the map scene's `LevelMapContext.level`) |
 | Player components | `ExplorerComponent.selfEntity` `+0x20` → `Entity.componentCache` `+0x30` (`Dictionary<int, Component>`, filled in `Awake`) |
