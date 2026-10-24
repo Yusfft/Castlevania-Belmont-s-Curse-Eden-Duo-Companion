@@ -29,7 +29,6 @@ ZBTN_W, ZBTN_H = 230, 64      # kZoomButtonW / kZoomButtonH
 ZBTN_X, ZBTN_Y = 40, H - ZBTN_H - 30
 PIN_CELL = 84                 # kPinCell
 PIN_TYPES = 3                 # kPinTypes
-PIN_SLOTS = 24                # kPinSlots
 BTN_W, BTN_H = 170, 56        # kButtonW / kButtonH
 LABEL_W, LABEL_H = 700, 70    # kLabelW / kLabelH
 PIN_X, PIN_Y = W - BTN_W - 40, 30
@@ -181,7 +180,7 @@ rows = [
     ("FOG OK N MATCH ZONES", "iiii", "bc.fog.ok", "bc.fog.n", "bc.fog.matched", "bc.fog.zones"),
     ("FOG HERE", "t", "bc.fog.cur"),
     ("FOG KEYS", "t", "bc.fog.keys"),
-    ("LAST SAVE", "t", "bc.save"),
+    ("LAST SAVE  PINS", "t", "bc.savepins"),
     ("MARKERS  DEATH SPOT", "t", "bc.marks"),
     ("WORLD BIOMES ROOMS", "iii", "bc.world.ready", "bc.world.biomes", "bc.world.rooms"),
     ("WORLD LOG", "t2", "bc.world.log"),
@@ -210,11 +209,42 @@ for row in rows:
             debug_widgets.append(value([420 + i * 200, y, 190, ROW], b, scale=3))
         y += ROW
 assert y < 984, y
+# Inventory debug page (stage 1 of the game menus: what the module reads).
+inv_rows = [
+    ("LEVEL", "t", "bc.inv.level"),
+    ("EQUIPPED", "t2", "bc.inv.eq"),
+    ("RELICS WORN", "t2", "bc.inv.relics"),
+    ("WEAPONS", "t3", "bc.inv.t1"),
+    ("ARCANAS", "t3", "bc.inv.t2"),
+    ("RELICS", "t3", "bc.inv.t3"),
+    ("ABILITIES", "t3", "bc.inv.t4"),
+    ("CLUES", "t2", "bc.inv.t5"),
+    ("QUEST  SKINS", "t2", "bc.inv.t6"),
+    ("STATS", "t5", "bc.inv.stats"),
+]
+inv_widgets = [
+    rect([0, 0, W, 72], BAR),
+    label([24, 20, 800, 40], text="INVENTORY", scale=6, color=GOLD),
+]
+iy = 84
+for caption, kind, bind in inv_rows:
+    lines = int(kind[1:]) if len(kind) > 1 else 1
+    inv_widgets.append(label([24, iy, 260, ROW], text=caption, scale=3, color=DIM))
+    inv_widgets.append(label([290, iy, 930, ROW * lines], bind_text=bind, scale=3, wrap_width=930, max_lines=lines))
+    iy += ROW * lines + 4
+assert iy < 984, iy
+inv_widgets += [
+    rect([0, 984, W, 96], BAR),
+    button(14, "DEBUG", "act_debug", w=300),
+    button(W - 314, "MAP", "act_map", w=300),
+]
+
 debug_widgets += [
     rect([0, 984, W, 96], BAR),
     {"type": "image", "rect": [24, 1004, BTN_W, BTN_H], "src": "module:bc:ui:btn:map", "need_bind": "bc.ui.ok"},
     tap([24, 1004, BTN_W, BTN_H], "act_map") | {"need_bind": "bc.ui.ok"},
     button(14, "MAP", "act_map", w=300) | {"need_bind": "bc.ui.plain"},
+    button(W - 314, "INVENTORY", "act_inv", w=300),
 ]
 
 manifest = {
@@ -241,29 +271,13 @@ manifest = {
         "act_pin_mode": {"kind": "module", "action": "pin_mode", "argument": 0},
         **{"act_pin_type%d" % k: {"kind": "module", "action": "pin_type", "argument": k} for k in range(PIN_TYPES)},
         "act_pin_tap": {"kind": "module", "action": "pin_tap", "argument": "$payload"},
-        # Pin storage: the slots live in persisted runtime flags. While the module asks
-        # ("bc.pin.sync"), it reads them back once ("pin.ready" 0) and then has its slots copied
-        # into them ("pin.ready" 1).
-        **{"act_pin_load%d" % i: {"kind": "module", "action": "pin_load:%d" % i, "argument": "$@flag:pin.v%d" % i}
-           for i in range(PIN_SLOTS)},
-        **{"act_pin_save%d" % i: {"kind": "flag", "flag": "pin.v%d" % i, "value": "$bc.pin.v%d" % i}
-           for i in range(PIN_SLOTS)},
-        "act_pin_ready": {"kind": "flag", "flag": "pin.ready", "value": "$bc.pin.loaded"},
         "act_debug": {"kind": "page", "page": "debug", "transition": "fade", "duration_ms": 150},
         "act_map": {"kind": "page", "page": "map", "transition": "fade", "duration_ms": 150},
+        "act_inv": {"kind": "page", "page": "inventory", "transition": "fade", "duration_ms": 150},
     },
     "module_outputs": ["bc.*"],
-    "flags": {"pin.ready": 0, **{"pin.v%d" % i: 0 for i in range(PIN_SLOTS)}},
-    "persist_flags": ["pin.v%d" % i for i in range(PIN_SLOTS)],
-    "enforce_gate": {"point": "bc.pin.sync", "max": 1},
-    "enforce": [
-        {"action": "act_pin_ready", "every_ms": 200},
-        *[{"action": "act_pin_load%d" % i, "every_ms": 200, "flag": "pin.ready", "value": False}
-          for i in range(PIN_SLOTS)],
-        *[{"action": "act_pin_save%d" % i, "every_ms": 200, "flag": "pin.ready", "value": True}
-          for i in range(PIN_SLOTS)],
-    ],
-    "pages": [map_page, {"id": "debug", "title": "Debug", "widgets": debug_widgets}],
+    "pages": [map_page, {"id": "debug", "title": "Debug", "widgets": debug_widgets},
+              {"id": "inventory", "title": "Inventory", "widgets": inv_widgets}],
 }
 
 out = Path(__file__).resolve().parent.parent / "package" / "dualscreen" / "manifest.json"
