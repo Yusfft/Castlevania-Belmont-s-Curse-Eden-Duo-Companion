@@ -19,6 +19,8 @@ struct FakeGuest {
     // The exploration dictionary of the last Build, for adding rooms.
     std::uint64_t dict_entries_ = 0, dict_ = 0, kstring_ = 0, karray_ = 0, klist_ = 0, kstate_ = 0;
     std::int32_t dict_count_ = 0;
+    // The game state stack (SetPause / SetLoading).
+    std::uint64_t gsm_ = 0, stack_ = 0, menu_entry_ = 0, loading_entry_ = 0, loading_state_ = 0;
 
     bool Read(std::uint64_t at, void* out, std::size_t n) const {
         auto it = regions.upper_bound(at);
@@ -38,6 +40,12 @@ struct FakeGuest {
         if (off + n > it->second.size())
             std::abort();
         return it->second.data() + off;
+    }
+    template <typename T>
+    T Get(std::uint64_t at) {
+        T v{};
+        std::memcpy(&v, Ptr(at, sizeof(T)), sizeof(T));
+        return v;
     }
     template <typename T>
     void Put(std::uint64_t at, T v) {
@@ -214,10 +222,14 @@ struct FakeGuest {
             ctx_ = Obj(Klass("MotherBase.EntityFramework", "EntityContext"), 0x70);
             Put<std::uint64_t>(sysmgr_ + 0x20, ctx_);
             const std::uint64_t kgsm = Klass("", "GameStateManager");
-            Put<std::uint64_t>(data_ + 0x6BDBA10, kgsm);
+            // As in the game: the TypeInfo slot holds the class; GetInstance's pointer holds
+            // the slot's address.
+            Put<std::uint64_t>(data_ + 0x6D42540, kgsm);
+            Put<std::uint64_t>(data_ + 0x6BDBA10, data_ + 0x6D42540);
             const std::uint64_t statics = Alloc(16);
             Put<std::uint64_t>(kgsm + 0xB8, statics);
             const std::uint64_t gsm = Obj(kgsm, 0xD0);
+            gsm_ = gsm;
             Put<std::uint64_t>(statics, gsm);
             state_ = Obj(Klass("", "EditorParameteredGameState"), 0x30);
             const std::uint64_t entry = Obj(Klass("", "GameStateManager.Entry"), 0x20);
@@ -226,6 +238,12 @@ struct FakeGuest {
             const std::uint64_t base_entry = Obj(Klass("", "GameStateManager.Entry"), 0x20);
             Put<std::uint64_t>(base_entry + 0x18, base);
             const std::uint64_t stack = Obj(Klass("System.Collections.Generic", "Stack`1"), 0x28);
+            loading_state_ = Obj(Klass("", "EditorParameteredGameState"), 0x30);
+            loading_entry_ = Obj(Klass("", "GameStateManager.Entry"), 0x20);
+            Put<std::uint64_t>(loading_entry_ + 0x18, loading_state_);
+            Put<std::uint64_t>(gsm + 0x68, loading_state_);
+            stack_ = stack;
+            menu_entry_ = entry;
             Put<std::uint64_t>(stack + 0x10, Array<std::uint64_t>(karray_, {base_entry, entry, 0}));
             Put<std::int32_t>(stack + 0x18, 2);
             Put<std::uint64_t>(gsm + 0xA0, stack);
@@ -236,6 +254,14 @@ struct FakeGuest {
         Put<std::uint8_t>(state_ + 0x19, paused ? 1 : 0);
         if (!menu)
             Put<std::uint64_t>(state_ + 0x28, Array<std::uint64_t>(karray_, {String(kstring_, "Gameplay")}));
+    }
+
+    /// The game's loading state on top of the state stack (SetPause first builds the stack).
+    void SetLoading(bool loading) {
+        if (!ctx_)
+            SetPause(false);
+        const std::uint64_t arr = Get<std::uint64_t>(stack_ + 0x10);
+        Put<std::uint64_t>(arr + 0x20 + 8, loading ? loading_entry_ : menu_entry_);
     }
 
     void SetLastSave(const std::string& room_id) { Put<std::uint64_t>(explorer_ + 0x88, String(kstring_, room_id)); }
