@@ -36,6 +36,7 @@ GO_W, GO_H = 760, 420         # kGameOverW / kGameOverH
 PAUSED_W, PAUSED_H = 600, 200 # kPausedW / kPausedH
 PROMPT_W, PROMPT_H = 700, 70  # kPromptW / kPromptH
 VER_W, VER_H = 460, 50        # kVersionW / kVersionH
+LOAD_W, LOAD_H = 900, 80      # kLoadingW / kLoadingH
 
 
 def fade(group, ms):
@@ -103,25 +104,30 @@ map_page = {
          "src": "module:bc:ui:paused", **fade("bc.paused", 260)},
         # Pin mode: a tap anywhere on the map (under the buttons) goes to the module.
         rect([0, 0, W, H], "#00000000", on_tap="act_pin_tap", payload="$tap", need_bind="bc.pin.mode"),
-        # Before a save is loaded: one of the game's painted biome cards.
-        {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:menuart", "need_bind": "bc.ui.wait"},
-        # The map screen's gold-edged frame (game art, drawn by the module).
-        {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:frame", "need_bind": "bc.ui.ok"},
-        # Before a save is loaded (the game's own menus): the prompt and the mod's version.
-        {"type": "image", "rect": [(W - PROMPT_W) // 2, H - PROMPT_H - 40, PROMPT_W, PROMPT_H],
-         "src": "module:bc:ui:prompt", "need_bind": "bc.ui.wait"},
-        {"type": "image", "rect": [W - VER_W - 30, H - VER_H - 24, VER_W, VER_H],
-         "src": "module:bc:ui:version", "need_bind": "bc.ui.wait"},
         # Level banner with the area and district names (a plain label until the art is read).
         {"type": "image", "rect": [14, 10, TITLE_W, TITLE_H], "src_bind": "bc.title.key",
          "need_bind": "bc.title.img"},
         label([36, 30, 900, 40], bind_text="bc.title", scale=5, color=GOLD,
               need_bind="!bc.title.img"),
+        # Before a save is loaded (the game's own menus): one of the game's painted biome cards,
+        # the prompt and the mod's version. The module publishes the card's key once it can draw it.
+        {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.ui.art", **fade("bc.ui.title", 300)},
+        {"type": "image", "rect": [(W - PROMPT_W) // 2, H - PROMPT_H - 40, PROMPT_W, PROMPT_H],
+         "src": "module:bc:ui:prompt", **fade("bc.ui.title", 300)},
+        {"type": "image", "rect": [W - VER_W - 30, H - VER_H - 24, VER_W, VER_H],
+         "src": "module:bc:ui:version", **fade("bc.ui.title", 300)},
+        # Loading (the game loading a scene, or the map not ready yet): the biome's card and
+        # "Loading, be patient" with its dots running 1-2-3.
+        {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.ui.lart", **fade("bc.ui.load", 300)},
+        {"type": "image", "rect": [(W - LOAD_W) // 2, 860, LOAD_W, LOAD_H], "src_bind": "bc.ui.ltxt",
+         **fade("bc.ui.load", 300)},
+        # The map screen's gold-edged frame (game art, drawn by the module).
+        {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:frame", "need_bind": "bc.ui.ok"},
         # Zoom: a small button (tap: next level out, wrapping to the closest; hold: the scale).
         {"type": "image", "rect": [ZBTN_X, ZBTN_Y, ZBTN_W, ZBTN_H], "src_bind": "bc.ui.zbtn",
-         "need_bind": "bc.ui.ok"},
+         "need_bind": "bc.ui.ingame"},
         tap([ZBTN_X, ZBTN_Y, ZBTN_W, ZBTN_H], "act_zoom") | {"on_hold": "act_zbar_open", "hold_ms": 450,
-                                                           "need_bind": "bc.ui.ok"},
+                                                           "need_bind": "bc.ui.ingame"},
         # The scale, over a layer that closes it: - and + buttons, or tap a level's name.
         rect([0, 0, W, H], "#00000000", on_tap="act_zbar_close", need_bind="bc.zbar"),
         {"type": "image", "rect": [ZOOM_X, ZOOM_Y, ZOOM_W, ZOOM_H], "src_bind": "bc.ui.zoom",
@@ -132,8 +138,8 @@ map_page = {
           for z, t in enumerate(ZOOM_TICKS)],
         # Pins: the button opens the symbols under it; then a tap on the map puts a pin there
         # (on a pin: another symbol replaces it, the same symbol takes it away).
-        {"type": "image", "rect": [PIN_X, PIN_Y, BTN_W, BTN_H], "src_bind": "bc.pin.btn", "need_bind": "bc.ui.ok"},
-        tap([PIN_X, PIN_Y, BTN_W, BTN_H], "act_pin_mode") | {"need_bind": "bc.ui.ok"},
+        {"type": "image", "rect": [PIN_X, PIN_Y, BTN_W, BTN_H], "src_bind": "bc.pin.btn", "need_bind": "bc.ui.ingame"},
+        tap([PIN_X, PIN_Y, BTN_W, BTN_H], "act_pin_mode") | {"need_bind": "bc.ui.ingame"},
         *[{"type": "image", "rect": [PIN_X + BTN_W // 2 - PIN_CELL // 2, PIN_Y + BTN_H + 12 + k * (PIN_CELL + 8),
                                      PIN_CELL, PIN_CELL],
            "src_bind": "bc.pin.k%d" % k, "need_bind": "bc.pin.mode"} for k in range(PIN_TYPES)],
@@ -282,5 +288,5 @@ manifest = {
 
 out = Path(__file__).resolve().parent.parent / "package" / "dualscreen" / "manifest.json"
 out.parent.mkdir(parents=True, exist_ok=True)
-out.write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
+out.write_text(json.dumps(manifest, separators=(",", ":")) + "\n", encoding="utf-8")  # compact: the runtime reads it on a phone
 print("wrote", out, "debug rows end at y =", y)
