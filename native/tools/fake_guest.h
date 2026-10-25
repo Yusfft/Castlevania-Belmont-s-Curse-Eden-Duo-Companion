@@ -21,6 +21,9 @@ struct FakeGuest {
     std::int32_t dict_count_ = 0;
     // The game state stack (SetPause / SetLoading).
     std::uint64_t gsm_ = 0, stack_ = 0, menu_entry_ = 0, loading_entry_ = 0, loading_state_ = 0;
+    // SetMapState's objects, for a fake guest helper to act on.
+    std::uint64_t inv_ = 0, markers_comp_ = 0, level_ = 0;
+    std::vector<std::uint64_t> items_; // sword, whip, bat relic, blood spikes, pyre, crypt key
 
     bool Read(std::uint64_t at, void* out, std::size_t n) const {
         auto it = regions.upper_bound(at);
@@ -314,6 +317,8 @@ struct FakeGuest {
             return d;
         };
         const std::uint64_t mc = Obj(Klass("", "MapMarkersComponent"), 0x40);
+        markers_comp_ = mc;
+        level_ = level;
         Put<std::uint64_t>(mc + 0x28, dict({{level, lmd}}));
         const std::uint64_t death = Obj(Klass("", "DeathResultComponent"), 0x60);
         death_ = death;
@@ -325,10 +330,15 @@ struct FakeGuest {
             Put<std::uint64_t>(death + 0x40, level);
             Put<std::uint64_t>(death + 0x58, level);
         }
-        // Inventory: two weapons owned, one worn, one relic slot of two used.
-        const std::uint64_t kitem = Klass("", "WeaponItemData");
+        // Inventory: two weapons, two arcanas and two relics owned; whip and fire worn, one
+        // relic slot of two used. The item classes sit in their TypeInfo slots like the game's.
+        const std::uint64_t kweapon = Klass("", "WeaponItemData"), kspell = Klass("", "SpellItemData"),
+                            kcharm = Klass("", "CharmItemData");
+        Put<std::uint64_t>(data_ + 0x6D488C8, kweapon);
+        Put<std::uint64_t>(data_ + 0x6D46D00, kspell);
+        Put<std::uint64_t>(data_ + 0x6D404E8, kcharm);
         const auto item = [&](const std::string& id, int type, std::int64_t key) {
-            const std::uint64_t it = Obj(kitem, 0x80);
+            const std::uint64_t it = Obj(type == 1 ? kweapon : type == 2 ? kspell : kcharm, 0x80);
             Put<std::uint64_t>(it + 0x20, String(kstring_, id));
             Put<std::int32_t>(it + 0x28, type);
             const std::uint64_t ls = Obj(Klass("UnityEngine.Localization", "LocalizedString"), 0xE0);
@@ -336,12 +346,16 @@ struct FakeGuest {
             Put<std::uint64_t>(it + 0x30, ls);
             return it;
         };
-        const std::uint64_t sword = item("Weapon_Sword", 1, 111), whip = item("Weapon_Whip", 1, 222);
-        const std::uint64_t relic = item("Charm_Ring", 3, 333), spell = item("Spell_Fire", 2, 444);
+        // (The game's item ids, so the menu page finds their art.)
+        const std::uint64_t sword = item("WeaponOneHandedTier1", 1, 111), whip = item("WeaponWhipTier4", 1, 222);
+        const std::uint64_t relic = item("Charm_BatPet", 3, 333), spell = item("BloodSpikes", 2, 444);
+        const std::uint64_t ice = item("FireSeismicWave", 2, 555), amulet = item("Charm_ChestRecover", 3, 666);
+        items_ = {sword, whip, relic, spell, ice, amulet};
         const std::uint64_t inv = Obj(Klass("", "Inventory"), 0x58);
+        inv_ = inv;
         const std::uint64_t ilist = Obj(klist_, 0x28);
-        Put<std::uint64_t>(ilist + 0x10, Array<std::uint64_t>(karray_, {sword, whip}));
-        Put<std::int32_t>(ilist + 0x18, 2);
+        Put<std::uint64_t>(ilist + 0x10, Array<std::uint64_t>(karray_, items_));
+        Put<std::int32_t>(ilist + 0x18, static_cast<std::int32_t>(items_.size()));
         Put<std::uint64_t>(inv + 0x20, ilist);
         Put<std::uint64_t>(inv + 0x28, whip);
         Put<std::uint64_t>(inv + 0x38, spell);
@@ -385,5 +399,31 @@ struct FakeGuest {
         // componentCache: Dictionary<int, Component>, keyed by type hash.
         Put<std::uint64_t>(entity + 0x30, dict({{0x1111, explorer_}, {0x2222, mc}, {0x3333, death}, {0x4444, invc},
                                                 {0x5555, exp}, {0x6666, statsc}}));
+    }
+
+    /// UIManager._instance.mapMarkerTypes: an IdDictionary whose List<TypeToUse> entries hold
+    /// MapMarkerTypeIDs with these guids.
+    void SetMarkerTypes(const std::vector<std::string>& guids) {
+        const std::uint64_t kui = Klass("", "UIManager");
+        Put<std::uint64_t>(data_ + 0x6D47F10, kui);
+        const std::uint64_t statics = Alloc(16);
+        Put<std::uint64_t>(kui + 0xB8, statics);
+        const std::uint64_t ui = Obj(kui, 0x80);
+        Put<std::uint64_t>(statics, ui);
+        const std::uint64_t ktype = Klass("", "MapMarkerTypeID"), kentry = Klass("", "TypeToUse");
+        std::vector<std::uint64_t> entries;
+        for (const auto& g : guids) {
+            const std::uint64_t t = Obj(ktype, 0x28);
+            Put<std::uint64_t>(t + 0x18, String(kstring_, g));
+            const std::uint64_t e = Obj(kentry, 0x28);
+            Put<std::uint64_t>(e + 0x18, t);
+            entries.push_back(e);
+        }
+        const std::uint64_t list = Obj(klist_, 0x28);
+        Put<std::uint64_t>(list + 0x10, Array<std::uint64_t>(karray_, entries));
+        Put<std::int32_t>(list + 0x18, static_cast<std::int32_t>(entries.size()));
+        const std::uint64_t dict = Obj(Klass("", "IdDictionary`2"), 0x28);
+        Put<std::uint64_t>(dict + 0x18, list);
+        Put<std::uint64_t>(ui + 0x58, dict);
     }
 };

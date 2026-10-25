@@ -717,6 +717,10 @@ ItemInfo ClassifyItem(const Value& v, const SerializedFile& sf, const ObjectInfo
 
 } // namespace
 
+std::optional<Texture> LoadTexture(const File& f, const ObjectInfo& obj, const Codecs& codecs, std::string* err) {
+    return LoadTexture2D(f, obj, codecs, err);
+}
+
 std::shared_ptr<const Names> LoadNames(Assets& assets) {
     auto n = std::make_shared<Names>();
     n->strings.Load(assets);
@@ -816,6 +820,7 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
     const ObjectInfo* context = nullptr;
     std::vector<const ObjectInfo*> districts;
     std::vector<const ObjectInfo*> nav_zones;
+    const ObjectInfo* nav_manager = nullptr;
     std::vector<const ObjectInfo*> secret_items;
     std::unordered_map<std::int64_t, ItemInfo> items;                  // MonoBehaviour -> item
     std::unordered_map<std::int64_t, IconRule> state_group;            // GameObject -> state
@@ -857,6 +862,8 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
                 districts.push_back(&o);
             } else if (HasField(sf, o, "cameraBounds") && HasField(sf, o, "navigationZoneCollider")) {
                 nav_zones.push_back(&o);
+            } else if (HasField(sf, o, "navigationZones") && HasField(sf, o, "mainNavigationZone")) {
+                nav_manager = &o;
             } else if (HasField(sf, o, "smoothness") && HasField(sf, o, "boxRoundness")) {
                 if (const auto v = sf.ReadObject(o)) {
                     const float k = Flt(v->Get("smoothness"), 3.0f);
@@ -1184,6 +1191,16 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
     }
 
     // ---- navigation zones
+    // The manager's list order is the index the game stores in MapMarkerData.navigationZoneIndex.
+    std::unordered_map<std::int64_t, int> nav_order;
+    if (nav_manager) {
+        if (const auto v = sf.ReadObject(*nav_manager)) {
+            if (const Value* list = v->Get("navigationZones")) {
+                for (std::size_t i = 0; i < list->list.size(); ++i)
+                    nav_order.emplace(PathId(&list->list[i]), static_cast<int>(i));
+            }
+        }
+    }
     for (const ObjectInfo* o : nav_zones) {
         const auto v = sf.ReadObject(*o);
         const Value* b = v ? v->Get("cameraBounds") : nullptr;
@@ -1198,6 +1215,8 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
             continue;
         if (const auto g = gos.find(PathId(v->Get("m_GameObject"))); g != gos.end())
             z.name = g->second.name;
+        if (const auto it = nav_order.find(o->path_id); it != nav_order.end())
+            z.game_index = it->second;
         lm->nav_zones.push_back(std::move(z));
     }
     for (std::size_t i = 0; i < lm->nav_zones.size(); ++i) {
@@ -1209,7 +1228,12 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
                              lm->nav_zones[static_cast<std::size_t>(lm->main_zone)].h))
             lm->main_zone = static_cast<int>(i);
     }
-    Log(log, std::to_string(lm->nav_zones.size()) + " navigation zones");
+    {
+        std::string order;
+        for (const auto& z : lm->nav_zones)
+            order += " " + std::to_string(z.game_index);
+        Log(log, std::to_string(lm->nav_zones.size()) + " navigation zones (game order" + order + ")");
+    }
 
     // ---- icons: every sprite under a map item, with the state that shows it
     const auto world_of = [&](std::int64_t tid) {
@@ -1484,6 +1508,7 @@ std::shared_ptr<const Common> LoadCommon(Assets& assets, const Codecs& codecs) {
                 font.point_size = Flt(fi->Get("m_PointSize"));
                 font.line_height = Flt(fi->Get("m_LineHeight"));
                 font.ascender = Flt(fi->Get("m_AscentLine"));
+                font.descender = Flt(fi->Get("m_DescentLine"));
             }
             font.padding = Flt(v->Get("m_AtlasPadding"), 8);
             std::unordered_map<std::int64_t, Glyph> by_index;

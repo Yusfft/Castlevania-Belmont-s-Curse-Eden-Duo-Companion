@@ -1,0 +1,159 @@
+{
+ "title_id": "0100BA4026E94000",
+ "build_id": "0F1169AA7D0FA4529C861F96ADEC306E00000000000000000000000000000000",
+ "module": "main",
+ "format": 2,
+ "layout": {
+  "segments": [
+   {
+    "location": 0,
+    "size": 85144424
+   },
+   {
+    "location": 85147648,
+    "size": 24555520
+   },
+   {
+    "location": 109703168,
+    "size": 7150208
+   }
+  ],
+  "bss_size": 3782016
+ },
+ "mailbox_size": 4096,
+ "mailbox_epoch_offset": 4092,
+ "patches": [
+  {
+   "offset": 67981056,
+   "expected": "fd7bbda9",
+   "replacement": "00000014",
+   "relocations": [
+    {
+     "offset": 0,
+     "kind": "aarch64_branch26",
+     "target": "code",
+     "addend": 0
+    }
+   ]
+  }
+ ],
+ "guest_code": {
+  "bytes": "fd7bbda9ff0301d1e00700a9f35301a9f55b02a9fe1b00f91300009073020091690640b929050011690600b9690240b94a6888520a29a6723f010a6b411300546922009134fddf88696240b93f01146ba012005460008052691240b96af23f914afddf883f010a6b611100548000805209000090290140f9e91000b4c91000372a5d40f98a1000b44b0140394b10003520008052751240f9f50f00b4a90240f96a2240f98a0f00b43f010aeb410f0054690e40b93f050071e00100543f090071800200543f0d0071200300543f110071600400543f150071000500543f190071600900543f1d0071800a0054400080526900001472000094e00c0035e00315aae10316aae2031faa000000945f0000146b000094000c0035e00315aae10316aae2031faa000000945800001464000094200b003586000094e00a0035e00315aae10316aa621640b9e3031faa00000094097c4093693600f94d0000147c000094a0090035e00315aa611640b9e2031faa000000944500001420008052621640f9632640f97c00009464080034621a40f9632a40f978000094e4070034000000900000009100000094e000805209000090290140f9090700b4e9060037e00309aa00000094000200b4f60300aa601a40bd611e40bd611640b9621a40f9e3031faa00000094e00315aa611640f9e20316aae3031faa00000094c91280b9693600f923000014e00080522300001420008052621640f9632640f957000094c4030034e00315aa611640f9621640b9e3031faa000000941500001420008052621640f9632640f94c00009464020034621a40f9632a40f948000094e4010034621e40f9632e40f94400009464010034e00315aa611640f9621a40f9631e40f9e4031faa00000094010000147f3600f900008052020000147f3600f9606600b96982019134fd9f88fe1b40f9f55b42a9f35341a9e00740a9ff0301910000001420008052761640f9360400b4632640f9e30300b4c50240f9060180d2bf0003ebc0000054a52c40f9250300b4c60400f161ffff5416000014a0008052a91240f9690200b42a1980b92b0940f90b0200b46c0d40f95f010ceb4ab18c9a0d0080d2bf010aeb4a010054bf0120f10a0100546e810091cf796df8ff0116eb60000054ad050091f7ffff1700008052c0035fd6c0008052a92240f9e90000b42a0d40f96b1680b98b00f8b77f010aeb4a00005400008052c0035fd604008052c20000b4a30000b4450040f9bf0003eb4100005424008052c0035fd6",
+  "relocations": [
+   {
+    "offset": 24,
+    "kind": "aarch64_adrp",
+    "target": "mailbox",
+    "addend": 0
+   },
+   {
+    "offset": 28,
+    "kind": "aarch64_add_lo12",
+    "target": "mailbox",
+    "addend": 0
+   },
+   {
+    "offset": 112,
+    "kind": "aarch64_adrp",
+    "target": "main",
+    "addend": 114554752
+   },
+   {
+    "offset": 116,
+    "kind": "aarch64_ldr64_lo12",
+    "target": "main",
+    "addend": 114554752
+   },
+   {
+    "offset": 264,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 32851680
+   },
+   {
+    "offset": 292,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 32851888
+   },
+   {
+    "offset": 332,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 32852096
+   },
+   {
+    "offset": 368,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 32847136
+   },
+   {
+    "offset": 412,
+    "kind": "aarch64_adrp",
+    "target": "main",
+    "addend": 114574552
+   },
+   {
+    "offset": 416,
+    "kind": "aarch64_add_lo12",
+    "target": "main",
+    "addend": 114574552
+   },
+   {
+    "offset": 420,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 6022160
+   },
+   {
+    "offset": 428,
+    "kind": "aarch64_adrp",
+    "target": "main",
+    "addend": 114574552
+   },
+   {
+    "offset": 432,
+    "kind": "aarch64_ldr64_lo12",
+    "target": "main",
+    "addend": 114574552
+   },
+   {
+    "offset": 448,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 6023040
+   },
+   {
+    "offset": 480,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 29561248
+   },
+   {
+    "offset": 500,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 29550496
+   },
+   {
+    "offset": 560,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 29552480
+   },
+   {
+    "offset": 640,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 29556144
+   },
+   {
+    "offset": 696,
+    "kind": "aarch64_branch26",
+    "target": "main",
+    "addend": 67981060
+   }
+  ]
+ }
+}

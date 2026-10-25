@@ -254,10 +254,34 @@ std::optional<Image> Decode(const Format& f, u32 w, u32 h, const u8* data, std::
                     std::memcpy(full.data() + ((static_cast<std::size_t>(by) * 4 + i / 4) * fw + bx * 4 + i % 4) * 4, tile[i], 4);
             }
         break;
-    case Codec::ASTC:
-        if (!astc || !astc(src, static_cast<std::size_t>(nbx) * nby * 16, fw, nby * f.bh, f.bw, f.bh, full.data()))
+    case Codec::ASTC: {
+        if (!astc)
             return std::nullopt;
+        // The host decodes at most 2048 x 2048 texels a call, and the block-padded layout can
+        // be wider than the texture (2048 texels of 10x10 blocks are 205 blocks, 2050 texels):
+        // decode in tiles of whole blocks.
+        constexpr u32 kHostMax = 2048;
+        const u32 tbx = std::max<u32>(1, kHostMax / f.bw), tby = std::max<u32>(1, kHostMax / f.bh);
+        std::vector<u8> blocks, tile;
+        for (u32 by0 = 0; by0 < nby; by0 += tby) {
+            const u32 bny = std::min(tby, nby - by0);
+            for (u32 bx0 = 0; bx0 < nbx; bx0 += tbx) {
+                const u32 bnx = std::min(tbx, nbx - bx0);
+                blocks.resize(static_cast<std::size_t>(bnx) * bny * 16);
+                for (u32 r = 0; r < bny; ++r)
+                    std::memcpy(blocks.data() + static_cast<std::size_t>(r) * bnx * 16,
+                                src + (static_cast<std::size_t>(by0 + r) * nbx + bx0) * 16, static_cast<std::size_t>(bnx) * 16);
+                const u32 tw = bnx * f.bw, th = bny * f.bh;
+                tile.assign(static_cast<std::size_t>(tw) * th * 4, 0);
+                if (!astc(blocks.data(), blocks.size(), tw, th, f.bw, f.bh, tile.data()))
+                    return std::nullopt;
+                for (u32 y = 0; y < th; ++y)
+                    std::memcpy(full.data() + ((static_cast<std::size_t>(by0) * f.bh + y) * fw + static_cast<std::size_t>(bx0) * f.bw) * 4,
+                                tile.data() + static_cast<std::size_t>(y) * tw * 4, static_cast<std::size_t>(tw) * 4);
+            }
+        }
         break;
+    }
     }
     Image img;
     img.w = w;

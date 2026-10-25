@@ -72,6 +72,16 @@ struct MapMarker {
     std::string type_guid;  // MapMarkerTypeID._guid (cross, chest, sun, ...)
     std::int32_t id = 0;
     float x = 0, y = 0;     // world position on that map
+    std::int32_t nav_zone = 0;  // navigationZoneIndex
+    std::uint64_t ptr = 0;      // the MapMarkerData object
+    std::uint64_t level_ptr = 0; // the LevelID object
+};
+
+/// A marker type the map offers (UIManager's marker display dictionary): its guid, the
+/// MapMarkerTypeID object and its guid string object.
+struct MarkerType {
+    std::string guid;
+    std::uint64_t type_obj = 0, guid_str = 0;
 };
 
 /// Where the player last died (DeathResultComponent), as the map's death spot shows it.
@@ -138,6 +148,13 @@ struct State {
     // The player's components, found through the explorer's entity (with the exploration walk).
     bool markers_ok = false;
     std::vector<MapMarker> markers;
+    std::uint64_t markers_comp = 0;      // MapMarkersComponent
+    std::int32_t markers_limit_mode = 0; // MapMarkerCountLimitMode: 0 all, 1 per type, 2 per type and map, 3 per map
+    std::int32_t markers_limit = 0;
+    std::uint64_t level_ptr = 0;         // ExplorerComponent.lastMainMapLevelId (LevelID)
+    std::vector<MarkerType> marker_types;
+    // Item classes (WeaponItemData, SpellItemData, CharmItemData; 0 = not resolved yet).
+    std::uint64_t weapon_class = 0, spell_class = 0, charm_class = 0;
     DeathSpot death;
     Inventory inv;
     // DeathResultComponent.hasJustDied (+0x20), read every sample: set by
@@ -193,6 +210,10 @@ private:
     /// The pause state (context flag and the active game state).
     void ReadPause(const Memory& mem, State& out);
     std::uint64_t death_comp_ = 0; // DeathResultComponent found by ReadPlayerComponents
+    /// Marker types from UIManager (kept once found: they are loaded assets).
+    void ReadMarkerTypes(const Memory& mem, State& out);
+    std::vector<MarkerType> marker_types_;
+    std::uint64_t ResolveClassSlot(const Memory& mem, std::uint64_t slot_offset, const char* name);
     std::uint64_t gsm_class_ = 0;
 
     bool delta_known_ = false;

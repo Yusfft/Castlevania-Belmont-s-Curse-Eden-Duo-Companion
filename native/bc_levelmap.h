@@ -104,6 +104,9 @@ struct Sprite {
     float width = 0, height = 0; // world units at scale 1 (rect size / pixels per unit)
     float pivot_x = 0.5f, pivot_y = 0.5f;
     float border[4]{}; // 9-slice border in pixels: left, bottom, right, top
+    // Halved copies of `tex` (level 1, 2, ...), made by bc_ui when it first draws the sprite
+    // much smaller than its texels.
+    mutable std::shared_ptr<const std::vector<Texture>> mips;
 };
 
 struct Tile {
@@ -162,6 +165,9 @@ struct Secret {
 struct NavZone {
     std::string name;
     float x = 0, y = 0, w = 0, h = 0;
+    /// Index in LevelMapNavigationZonesManager.navigationZones (MapMarkerData.navigationZoneIndex),
+    /// -1 when the manager does not list it.
+    int game_index = -1;
 };
 
 struct LevelMap {
@@ -202,7 +208,7 @@ struct Glyph {
 };
 struct Font {
     Texture atlas; // Alpha8 SDF atlas, alpha channel
-    float point_size = 0, line_height = 0, ascender = 0, padding = 0;
+    float point_size = 0, line_height = 0, ascender = 0, descender = 0, padding = 0;
     std::unordered_map<std::uint32_t, Glyph> glyphs;
     bool Empty() const { return atlas.Empty() || glyphs.empty(); }
 };
@@ -239,6 +245,9 @@ struct Names {
 int BiomeNumber(std::string_view world_name);
 
 std::shared_ptr<const Names> LoadNames(Assets& assets);
+/// A Texture2D object (RGBA8, rows bottom-up), the Switch layouts and ASTC included.
+std::optional<Texture> LoadTexture(const File& f, const bc_unity::ObjectInfo& obj, const Codecs& codecs,
+                                   std::string* err);
 std::shared_ptr<const Common> LoadCommon(Assets& assets, const Codecs& codecs);
 /// Null on failure; `log` (optional) receives the loader's log either way.
 std::shared_ptr<const LevelMap> LoadLevelMap(Assets& assets, const Codecs& codecs, const Names& names,

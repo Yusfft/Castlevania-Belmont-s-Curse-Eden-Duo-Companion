@@ -22,6 +22,10 @@ constexpr u64 kSystemManagerTypeInfo = 0x6D47368;
 // reaches it through a pointer at 0x6BDBA10, which holds the slot's address, not the class.
 constexpr u64 kGameStateManagerTypeInfo = 0x6D42540;
 constexpr u64 kSystemManagerEncoded = 0x200117D1; // unresolved metadata-usage token (TypeInfo #35816)
+constexpr u64 kUIManagerTypeInfo = 0x6D47F10;
+constexpr u64 kWeaponItemDataTypeInfo = 0x6D488C8;
+constexpr u64 kSpellItemDataTypeInfo = 0x6D46D00;
+constexpr u64 kCharmItemDataTypeInfo = 0x6D404E8;
 
 // Il2CppMetadataRegistration counts for this build (entries 0, 2, 6, 10, 12).
 constexpr u64 kGenericClassesCount = 14149;
@@ -66,7 +70,13 @@ constexpr u64 kExplorerLevelId = 0xA0;
 constexpr u64 kExplorerSelfEntity = 0x20;
 constexpr u64 kSavableGuid = 0x18;
 constexpr u64 kEntityComponentCache = 0x30;
+constexpr u64 kMarkersLimitMode = 0x20;
+constexpr u64 kMarkersLimit = 0x24;
 constexpr u64 kMarkersLevels = 0x28;
+constexpr u64 kMarkerNavZone = 0x1C;
+constexpr u64 kUIManagerMarkerTypes = 0x58;   // MapMarkerTypeDisplayDictionary
+constexpr u64 kIdDictElements = 0x18;         // AbstractIDDictionary.elements (List<TToU>)
+constexpr u64 kIdDictEntryId = 0x18;          // TToU.id
 constexpr u64 kLevelMarkersLevel = 0x10;
 constexpr u64 kLevelMarkersList = 0x18;
 constexpr u64 kMarkerId = 0x10;
@@ -469,6 +479,9 @@ void Reader::ReadPlayerComponents(const Memory& mem, u64 explorer, State& out) {
     for (const auto& [key, comp] : comps) {
         const std::string& cls = ClassOf(mem, comp);
         if (cls == "MapMarkersComponent") {
+            out.markers_comp = comp;
+            io.Get(comp + kMarkersLimitMode, out.markers_limit_mode);
+            io.Get(comp + kMarkersLimit, out.markers_limit);
             u64 levels = 0;
             std::vector<std::pair<u64, u64>> by_level;
             if (!io.Get(comp + kMarkersLevels, levels))
@@ -508,6 +521,9 @@ void Reader::ReadPlayerComponents(const Memory& mem, u64 explorer, State& out) {
                     mk.level_guid = guid;
                     mk.x = pos[0];
                     mk.y = pos[1];
+                    mk.ptr = m;
+                    mk.level_ptr = level ? level : level_key;
+                    io.Get(m + kMarkerNavZone, mk.nav_zone);
                     markers.push_back(std::move(mk));
                 }
                 if (!ok)
@@ -707,6 +723,47 @@ void Reader::ReadStats(const Memory& mem, u64 comp, State& out) {
     out.inv.stats_ok = true;
 }
 
+u64 Reader::ResolveClassSlot(const Memory& mem, u64 slot_offset, const char* name) {
+    Io io{mem};
+    u64 klass = 0, np = 0;
+    const u64 slot = mem.main_base + slot_offset + static_cast<u64>(delta_);
+    if (!io.Get(slot, klass) || klass == 0 || (klass & 7) != 0 || !io.Get(klass + kClassName, np) ||
+        io.CStr(np) != name)
+        return 0;
+    return klass;
+}
+
+void Reader::ReadMarkerTypes(const Memory& mem, State& out) {
+    if (!marker_types_.empty()) {
+        out.marker_types = marker_types_;
+        return;
+    }
+    Io io{mem};
+    const u64 klass = ResolveClassSlot(mem, kUIManagerTypeInfo, "UIManager");
+    u64 sf = 0, ui = 0, dict = 0, list = 0, items = 0, cap = 0;
+    s32 size = 0;
+    if (!klass || !sf_offset_ || !io.Ptr(klass + static_cast<u64>(sf_offset_), sf) || !io.Ptr(sf, ui) ||
+        !io.Ptr(ui + kUIManagerMarkerTypes, dict) || !io.Ptr(dict + kIdDictElements, list) ||
+        !io.Get(list + kListSize, size) || size <= 0 || size > 64 || !io.Ptr(list + kListItems, items) ||
+        !io.Get(items + kArrayLength, cap) || cap < static_cast<u64>(size))
+        return;
+    std::vector<MarkerType> types;
+    for (s32 i = 0; i < size; ++i) {
+        u64 entry = 0, type = 0, gs = 0;
+        MarkerType t;
+        if (!io.Ptr(items + kArrayData + 8 * static_cast<u64>(i), entry) || !io.Ptr(entry + kIdDictEntryId, type) ||
+            ClassOf(mem, type) != "MapMarkerTypeID" || !io.Ptr(type + kSavableGuid, gs) ||
+            ClassOf(mem, gs) != "System.String" || !io.String(gs, t.guid, 64) || t.guid.empty())
+            continue;
+        t.type_obj = type;
+        t.guid_str = gs;
+        types.push_back(std::move(t));
+    }
+    if (!types.empty())
+        marker_types_ = types;
+    out.marker_types = std::move(types);
+}
+
 void Reader::ReadPause(const Memory& mem, State& out) {
     Io io{mem};
     u64 ctx = 0;
@@ -833,10 +890,17 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
             if (io.Get(explorer + kExplorerLastSaveRoom, last_save))
                 io.String(last_save, out.last_save_room, 160);
             if (u64 level = 0, gs = 0; io.Get(explorer + kExplorerLevelId, level) && level &&
-                                        io.Get(level + kSavableGuid, gs))
+                                        io.Get(level + kSavableGuid, gs)) {
                 io.String(gs, out.level_guid, 64);
-            if (with_fog)
+                out.level_ptr = level;
+            }
+            if (with_fog) {
                 ReadPlayerComponents(mem, explorer, out);
+                ReadMarkerTypes(mem, out);
+                out.weapon_class = ResolveClassSlot(mem, kWeaponItemDataTypeInfo, "WeaponItemData");
+                out.spell_class = ResolveClassSlot(mem, kSpellItemDataTypeInfo, "SpellItemData");
+                out.charm_class = ResolveClassSlot(mem, kCharmItemDataTypeInfo, "CharmItemData");
+            }
             if (u8 died = 0; death_comp_ && ClassOf(mem, death_comp_) == "DeathResultComponent" &&
                              io.Get(death_comp_ + kDeathJustDied, died)) {
                 out.death_flag_ok = true;

@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <dlfcn.h>
 
+#include <array>
 #include <cmath>
 
 #include <chrono>
@@ -78,7 +79,11 @@ std::int64_t GetI(void*, const char*, std::int64_t fb) { return fb; }
 EdenDsmodBool DecodeAstc(void*, std::uint32_t w, std::uint32_t h, std::uint32_t bw, std::uint32_t bh,
                          const std::uint8_t* in, std::size_t in_size, std::uint8_t* out, std::size_t out_size) {
 #ifdef BC_TEST_ASTC
-    if (out_size < static_cast<std::size_t>(w) * h * 4)
+    // The same limits as Eden Duo's decoder (mod_module_services.cpp): at most 2048 x 2048, the
+    // input exactly the block count, the output exactly w * h * 4.
+    if (w == 0 || h == 0 || w > 2048 || h > 2048 ||
+        in_size != static_cast<std::size_t>((w + bw - 1) / bw) * ((h + bh - 1) / bh) * 16 ||
+        out_size != static_cast<std::size_t>(w) * h * 4)
         return EDEN_DSMOD_FALSE;
     return TestAstcDecode(in, in_size, w, h, bw, bh, out) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
 #else
@@ -89,12 +94,91 @@ EdenDsmodBool DecodeAstc(void*, std::uint32_t w, std::uint32_t h, std::uint32_t 
 double GetF(void*, const char*, double fb) { return fb; }
 const char* GetT(void*, const char*) { return nullptr; }
 
+// The guest mailbox and a stand-in for the guest helper (native/helper/bc_guest_helper.S; the
+// real one is tested by tools/test_guest_helper.py): once a game frame it counts, and serves a
+// new request by doing to the fake guest what the game's method would.
+struct FakeHelper {
+    std::array<std::uint8_t, 4096> mb{};
+    std::vector<std::string> log;
+    template <typename T>
+    T Get(std::uint32_t o) const {
+        T v{};
+        std::memcpy(&v, mb.data() + o, sizeof v);
+        return v;
+    }
+    template <typename T>
+    void Put(std::uint32_t o, T v) {
+        std::memcpy(mb.data() + o, &v, sizeof v);
+    }
+    void Frame(FakeGuest& g) {
+        Put<std::uint32_t>(4, Get<std::uint32_t>(4) + 1);
+        const auto req = Get<std::uint32_t>(8);
+        if (Get<std::uint32_t>(0) != 0x31484342 || req == Get<std::uint32_t>(0x60))
+            return;
+        const auto cmd = Get<std::uint32_t>(0xC);
+        const auto i = Get<std::int32_t>(0x14);
+        const auto o1 = Get<std::uint64_t>(0x28), o2 = Get<std::uint64_t>(0x30), o3 = Get<std::uint64_t>(0x38);
+        std::uint32_t result = 0;
+        std::int64_t value = 0;
+        const auto relic_slot = [&](std::uint64_t put) {
+            const std::uint64_t arr = g.Get<std::uint64_t>(g.inv_ + 0x40);
+            if (i < 0 || static_cast<std::uint64_t>(i) >= g.Get<std::uint64_t>(arr + 0x18)) {
+                result = 6;
+                return;
+            }
+            g.Put<std::uint64_t>(arr + 0x20 + 8 * static_cast<std::uint64_t>(i), put);
+        };
+        if (Get<std::uint32_t>(0x10) != Get<std::uint32_t>(0xFFC))
+            result = 3;
+        else if (cmd == 1)
+            g.Put<std::uint64_t>(g.inv_ + 0x28, o1);
+        else if (cmd == 2)
+            g.Put<std::uint64_t>(g.inv_ + 0x38, o1);
+        else if (cmd == 3)
+            relic_slot(o1);
+        else if (cmd == 4)
+            relic_slot(0);
+        else if (cmd == 5)
+            value = 99;
+        else if (cmd != 6 && cmd != 7)
+            result = 2;
+        char line[256];
+        std::snprintf(line, sizeof line, "cmd %u i %d x %.1f y %.1f o1 %llx o2 %llx o3 %llx -> %u", cmd, i,
+                      static_cast<double>(Get<float>(0x18)), static_cast<double>(Get<float>(0x1C)),
+                      static_cast<unsigned long long>(o1), static_cast<unsigned long long>(o2),
+                      static_cast<unsigned long long>(o3), result);
+        log.push_back(line);
+        Put<std::uint32_t>(0x64, result);
+        Put<std::int64_t>(0x68, value);
+        Put<std::uint32_t>(0x60, req);
+    }
+};
+FakeHelper* g_helper = nullptr;
+template <typename T>
+EdenDsmodBool MbLoad(void*, std::uint32_t o, T* v) {
+    if (o % sizeof(T) != 0 || o > 4096 - sizeof(T))
+        return EDEN_DSMOD_FALSE;
+    *v = g_helper->Get<T>(o);
+    return EDEN_DSMOD_TRUE;
+}
+template <typename T>
+EdenDsmodBool MbStore(void*, std::uint32_t o, T v) {
+    if (o % sizeof(T) != 0 || o > 4096 - sizeof(T))
+        return EDEN_DSMOD_FALSE;
+    g_helper->Put<T>(o, v);
+    return EDEN_DSMOD_TRUE;
+}
+
 struct Png {
     std::string path;
 };
 void Sink(void* receiver, std::uint32_t w, std::uint32_t h, const std::uint8_t* px, std::size_t size) {
     auto* out = static_cast<Png*>(receiver);
     std::FILE* f = std::fopen(out->path.c_str(), "wb");
+    if (!f) {
+        std::fprintf(stderr, "cannot write %s\n", out->path.c_str());
+        return;
+    }
     std::fprintf(f, "P6\n%u %u\n255\n", w, h);
     for (std::size_t i = 0; i + 3 < size; i += 4) {
         const int a = px[i + 3];
@@ -123,8 +207,12 @@ int main(int argc, char** argv) {
     }
     Sim sim;
     g_sim = &sim;
+    FakeHelper helper;
+    g_helper = &helper;
+    helper.Put<std::uint32_t>(0xFFC, 1); // Eden's epoch after its first Run
     sim.romfs = argv[2];
     const std::string out = argv[3];
+    ::mkdir(out.c_str(), 0755);
     // Streets Poor room uid 59 at (-7, 15), 2x2 chunks, chunk 0 disabled; player in chunk (1,0).
     // Room 59 (StreetsPoor_Room21): positionCoord (-7, 15) + editionOffset (0, -1) = chunk origin
     // (-7, 14). The player stands in its chunk (1, 0): world x = -6 * 24 + 10, y = 14 * 13 + 4.
@@ -191,23 +279,6 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "module wants capabilities the host lacks\n");
         return 1;
     }
-    {
-        // The module's pin file, with one chest at (50, 44) on map 1.
-        const char* xdg = std::getenv("XDG_DATA_HOME");
-        if (xdg && *xdg) {
-            std::string dir = std::string(xdg) + "/eden";
-            for (const char* part : {"", "/dualscreen", "/persist", "/0100BA4026E94000"}) {
-                dir += part;
-                ::mkdir(dir.c_str(), 0700);
-            }
-            const long long chest = (1LL << 48) | (1LL << 43) | (1LL << 40) |
-                                    ((50LL * 4 + (1 << 19)) << 20) | (44LL * 4 + (1 << 19));
-            if (std::FILE* f = std::fopen((dir + "/belmonts-curse-map-pins.txt").c_str(), "wb")) {
-                std::fprintf(f, "%lld\n", chest);
-                std::fclose(f);
-            }
-        }
-    }
     void* inst = api->create(&host, "{}");
     if (!inst) {
         std::fprintf(stderr, "create failed\n");
@@ -218,6 +289,12 @@ int main(int argc, char** argv) {
     hx.struct_size = sizeof(hx);
     hx.abi_hash = EDEN_DSMOD_EXT_HASH;
     hx.decode_astc = DecodeAstc;
+    hx.mailbox_address = 0x7F000000;
+    hx.mailbox_size = 4096;
+    hx.load_u32 = MbLoad<std::uint32_t>;
+    hx.load_u64 = MbLoad<std::uint64_t>;
+    hx.store_u32 = MbStore<std::uint32_t>;
+    hx.store_u64 = MbStore<std::uint64_t>;
     ext->configure(inst, &hx);
     // Explored zones: every zone of the rooms near the start and near (40, 40), from the same
     // level map the module reads (the sim plays the game's part here).
@@ -234,6 +311,10 @@ int main(int argc, char** argv) {
             [](const std::string& p, std::uint64_t off, void* out, std::size_t n) { return ReadRomfs(nullptr, p.c_str(), off, out, n); },
             names);
         bc_levelmap::Codecs codecs;
+        codecs.astc = [](const std::uint8_t* in, std::size_t in_size, std::uint32_t w, std::uint32_t h, std::uint32_t bw,
+                         std::uint32_t bh, std::uint8_t* px) {
+            return DecodeAstc(nullptr, w, h, bw, bh, in, in_size, px, static_cast<std::size_t>(w) * h * 4) != 0;
+        };
         bc_levelmap::Names nm;
         if (auto lm = bc_levelmap::LoadLevelMap(assets, codecs, nm, "World_Biome_01_Streets_Poor")) {
             std::map<std::string, std::vector<std::int32_t>> rooms;
@@ -254,6 +335,13 @@ int main(int argc, char** argv) {
                                   {{"3fbe385e6658a484daabb64abc8b5d03", 52.0f, 46.0f},
                                    {"f4bef205f62005a41822af84291076f0", 28.0f, 34.0f}},
                                   true, 46.0f, 30.0f);
+            if (const auto common = bc_levelmap::LoadCommon(assets, codecs)) {
+                std::vector<std::string> guids;
+                for (const auto& [g, sprite] : common->marker_types)
+                    guids.push_back(g);
+                sim.guest.SetMarkerTypes(guids);
+                std::printf("sim: %zu marker types\n", guids.size());
+            }
             std::printf("sim: level %s\n", lm->level_guid.c_str());
             std::printf("sim: %zu explored rooms\n", rooms.size());
         }
@@ -263,6 +351,7 @@ int main(int argc, char** argv) {
         sim.ints.clear();
         sim.texts.clear();
         api->sample(inst, &host);
+        helper.Frame(sim.guest);
         api->tick(inst, &host);
         if (sim.ints["bc.world.ready"] && i > 40)
             break;
@@ -280,6 +369,7 @@ int main(int argc, char** argv) {
             sim.ints.clear();
             sim.texts.clear();
             api->sample(inst, &host);
+            helper.Frame(sim.guest);
         }
     };
     const auto save = [&](const std::string& key, const std::string& name) {
@@ -297,7 +387,7 @@ int main(int argc, char** argv) {
     std::string last_key = sim.texts["bc.map.key"];
     int key_changes = 0;
     for (int step = 1; step <= 40; ++step) {
-        sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -134.0f + step);
+        sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -134.0f + static_cast<float>(step));
         sample_n(1);
         if (sim.texts["bc.map.key"] != last_key) {
             ++key_changes;
@@ -328,16 +418,16 @@ int main(int argc, char** argv) {
         sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -94.0f);
         sample_n(10);
     }
-    ext->on_action(inst, "zoom", 0); // close -> medium
+    ext->on_action(inst, "zoom", 0); // close -> near
     sample_n(2);
-    std::printf("medium: key=%s\n", sim.texts["bc.map.key"].c_str());
-    save(sim.texts["bc.map.key"], "sim_medium");
-    ext->on_action(inst, "zoom", 0); // medium -> area
+    std::printf("near: key=%s zoom=%lld\n", sim.texts["bc.map.key"].c_str(), static_cast<long long>(sim.ints["bc.zoom"]));
+    save(sim.texts["bc.map.key"], "sim_near");
+    ext->on_action(inst, "zoom", 0); // near -> far
     sample_n(2);
-    std::printf("area: akey=%s area=%lld mk=%lld,%lld\n", sim.texts["bc.map.akey"].c_str(),
-                static_cast<long long>(sim.ints["bc.map.area"]), static_cast<long long>(sim.ints["bc.mk.dx"]),
+    std::printf("far: key=%s zoom=%lld mk=%lld,%lld\n", sim.texts["bc.map.key"].c_str(),
+                static_cast<long long>(sim.ints["bc.zoom"]), static_cast<long long>(sim.ints["bc.mk.dx"]),
                 static_cast<long long>(sim.ints["bc.mk.dy"]));
-    save(sim.texts["bc.map.akey"], "sim_area");
+    save(sim.texts["bc.map.key"], "sim_far");
     std::printf("title '%s' key %s img %lld\n", sim.texts["bc.title"].c_str(), sim.texts["bc.title.key"].c_str(),
                 static_cast<long long>(sim.ints["bc.title.img"]));
     save(sim.texts["bc.title.key"], "sim_title");
@@ -349,7 +439,7 @@ int main(int argc, char** argv) {
     std::printf("ui zoom key %s ok %lld\n", sim.texts["bc.ui.zoom"].c_str(), static_cast<long long>(sim.ints["bc.ui.ok"]));
     ext->on_action(inst, "zoom_set", 0);
     // Into the main map, near (40, 40): close view.
-    ext->on_action(inst, "zoom", 0); // area -> close
+    ext->on_action(inst, "zoom", 0); // far -> close
     sim.guest.Put<float>(sim.guest.explorer_ + 0x90, 40.0f);
     sim.guest.Put<float>(sim.guest.explorer_ + 0x94, 40.0f);
     sample_n(32); // the exploration walk runs twice a second
@@ -364,31 +454,100 @@ int main(int argc, char** argv) {
                 sim.texts["bc.title"].c_str(), static_cast<long long>(sim.ints["bc.mk.dy"]),
                 static_cast<long long>(sim.ints["bc.lm.state"]));
     save(sim.texts["bc.map.key"], "sim_main_close");
-    // Pins: read from the module's pin file (written below before create: a chest at (50, 44)
-    // on map 1), then pin mode, symbol 2 (eye), taps.
+    // The equipment page: the game's menu, read in the background once the map is up, then
+    // taps on it (positions as the menu lays out at 1240 x 1080) and changes through the (fake)
+    // guest helper.
+    const auto helper_log = [&](const char* what) {
+        sample_n(3);
+        std::printf("%s -> %s | msg %s show %lld | helper %s\n", what,
+                    helper.log.empty() ? "(no request)" : helper.log.back().c_str(), sim.texts["bc.eq.msg"].c_str(),
+                    static_cast<long long>(sim.ints["bc.eq.msgshow"]), sim.texts["bc.savepins"].c_str());
+        helper.log.clear();
+    };
     {
-        sample_n(2);
-        std::printf("pins n=%lld store=%s\n", static_cast<long long>(sim.ints["bc.pin.n"]),
-                    sim.texts["bc.pin.store"].c_str());
+        const auto t_menu = std::chrono::steady_clock::now();
+        for (int i = 0; i < 600 && !sim.ints["bc.menu.ok"]; ++i) {
+            sample_n(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        std::printf("menu ok=%lld wait=%lld none=%lld fail=%lld after %.0f ms, key %s\n",
+                    static_cast<long long>(sim.ints["bc.menu.ok"]), static_cast<long long>(sim.ints["bc.menu.wait"]),
+                    static_cast<long long>(sim.ints["bc.menu.none"]), static_cast<long long>(sim.ints["bc.menu.fail"]),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_menu).count(),
+                    sim.texts["bc.menu.key"].c_str());
+        int shot = 0;
+        const auto show = [&](const char* what) {
+            sample_n(1);
+            const std::string key = sim.texts["bc.menu.key"];
+            const auto t1 = std::chrono::steady_clock::now();
+            save(key, "sim_menu" + std::to_string(shot++) + "_" + what);
+            sample_n(1);
+            std::printf("  %s: key %s tabs %lld pkey %s (%.0f ms)\n", what, key.c_str(),
+                        static_cast<long long>(sim.ints["bc.menu.tabs"]), sim.texts["bc.menu.pkey"].c_str(),
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count());
+        };
+        const auto tap = [&](int x, int y, const char* what) {
+            const long long packed = (static_cast<long long>(x) << 32) | static_cast<unsigned>(y);
+            const auto ok = ext->on_action(inst, "menu_tap", packed);
+            std::printf("menu tap %d,%d (%s) accepted %u\n", x, y, what, ok);
+        };
+        show("equipment");
+        tap(237, 531, "arcana card");
+        show("arcanas");
+        tap(297, 294, "Infernal Pyre");
+        show("pyre inspected");
+        tap(297, 294, "Infernal Pyre again");
+        helper_log("equip the pyre");
+        std::printf("back accepted %u\n", ext->on_action(inst, "menu_back", 0));
+        show("back");
+        tap(609, 529, "weapon card");
+        show("armoury");
+        ext->on_action(inst, "menu_back", 0);
+        show("equipment");
+        tap(963, 413, "relic slot 2");
+        show("relics, slot 2");
+        tap(401, 521, "Crypt Key");
+        show("crypt key inspected");
+        tap(401, 521, "Crypt Key again");
+        helper_log("crypt key into slot 2");
+        sample_n(32);
+        show("after equip");
+        std::printf("  worn now: %d\n", sim.guest.Get<std::uint64_t>(sim.guest.Get<std::uint64_t>(sim.guest.inv_ + 0x40) + 0x28) == sim.guest.items_[5]);
+        tap(620, 355, "slot 2 again");
+        helper_log("take it off");
+        sample_n(32);
+        show("relic off");
+        tap(773, 355, "relic slot 3 (locked)");
+        ext->on_action(inst, "menu_back", 0);
+        sample_n(32);
+        show("equipment again");
+    }
+    // Pins: the game's markers (a cross at (52, 46), a chest at (28, 34)). Standing on the cross
+    // puts it at the canvas centre (the view keeps the player's point there), so the taps below
+    // know where it is.
+    {
+        sim.guest.Put<float>(sim.guest.explorer_ + 0x90, 52.0f);
+        sim.guest.Put<float>(sim.guest.explorer_ + 0x94, 46.0f);
+        sample_n(32);
+        const int px = 620, py = 540;
         ext->on_action(inst, "pin_mode", 0);
         ext->on_action(inst, "pin_type", 2);
         sample_n(2);
-        const auto tap = [&](int x, int y) {
+        std::printf("pin mode=%lld btn=%s k2=%s markers=%lld cross at %d,%d\n", static_cast<long long>(sim.ints["bc.pin.mode"]),
+                    sim.texts["bc.pin.btn"].c_str(), sim.texts["bc.pin.k2"].c_str(),
+                    static_cast<long long>(sim.ints["bc.markers.n"]), px, py);
+        const auto tap = [&](int x, int y, const char* what) {
             const long long packed = (static_cast<long long>(x) << 32) | static_cast<unsigned>(y);
             const auto ok = ext->on_action(inst, "pin_tap", packed);
-            sample_n(2);
-            std::printf("tap %d,%d -> %u n=%lld store=%s key=%s\n", x, y, ok,
-                        static_cast<long long>(sim.ints["bc.pin.n"]), sim.texts["bc.pin.store"].c_str(),
-                        sim.texts["bc.map.key"].c_str());
+            std::printf("tap %d,%d accepted %u: ", x, y, ok);
+            helper_log(what);
         };
-        std::printf("pin mode=%lld btn=%s k2=%s\n", static_cast<long long>(sim.ints["bc.pin.mode"]),
-                    sim.texts["bc.pin.btn"].c_str(), sim.texts["bc.pin.k2"].c_str());
-        tap(820, 460); // on the chest: becomes an eye
-        tap(420, 600); // a new eye
-        tap(300, 300); // another
-        tap(300, 300); // same symbol again: removed
+        tap(px + 3, py - 2, "eye on the cross: change");
+        tap(px + 300, py, "eye on empty map: add");
+        ext->on_action(inst, "pin_type", 0);
+        tap(px, py, "cross on the cross: remove");
         save(sim.texts["bc.map.key"], "sim_pins_close");
-        for (const char* k : {"zbtn:4", "zbtn:0", "zoom:3", "btn:pin:0", "btn:pin:1", "pin:0:0", "pin:2:1", "pinhint"})
+        for (const char* k : {"zbtn:2", "zbtn:0", "zoom:2", "btn:pin:0", "btn:pin:1", "pin:0:0", "pin:2:1", "pinhint"})
             {
                 std::string n = k;
                 for (char& c : n)
@@ -399,11 +558,11 @@ int main(int argc, char** argv) {
         ext->on_action(inst, "zbar_open", 0);
         sample_n(1);
         std::printf("zbar=%lld zbtn=%s\n", static_cast<long long>(sim.ints["bc.zbar"]), sim.texts["bc.ui.zbtn"].c_str());
-        ext->on_action(inst, "zoom_set", 3);
+        ext->on_action(inst, "zoom_set", 1);
         sample_n(2);
-        std::printf("after zoom_set 3: zbar=%lld zoom=%lld key=%s\n", static_cast<long long>(sim.ints["bc.zbar"]),
+        std::printf("after zoom_set 1: zbar=%lld zoom=%lld key=%s\n", static_cast<long long>(sim.ints["bc.zbar"]),
                     static_cast<long long>(sim.ints["bc.zoom"]), sim.texts["bc.map.key"].c_str());
-        ext->on_action(inst, "zoom_set", 4);
+        ext->on_action(inst, "zoom_set", 2);
         sample_n(2);
     }
     // Pause, then a death.
@@ -455,12 +614,9 @@ int main(int argc, char** argv) {
             save("module:bc:ui:menuart:" + std::to_string(c), "sim_ui5_card" + std::to_string(c));
     }
     save(sim.texts["bc.title.key"], "sim_main_title");
-    ext->on_action(inst, "zoom", 0);
-    ext->on_action(inst, "zoom", 0); // -> area
+    ext->on_action(inst, "zoom_set", 0); // far
     sample_n(2);
-    save(sim.texts["bc.map.akey"], "sim_main_area");
-    std::printf("main area: akey=%s mk=%lld,%lld\n", sim.texts["bc.map.akey"].c_str(),
-                static_cast<long long>(sim.ints["bc.mk.dx"]), static_cast<long long>(sim.ints["bc.mk.dy"]));
+    save(sim.texts["bc.map.key"], "sim_main_far");
     std::printf("lm log:\n%s\nrender ms %lld\n", sim.texts["bc.lm.log"].c_str(),
                 static_cast<long long>(sim.ints["bc.render.ms"]));
     std::printf("unknown action accepted: %u\n", ext->on_action(inst, "nope", 0));

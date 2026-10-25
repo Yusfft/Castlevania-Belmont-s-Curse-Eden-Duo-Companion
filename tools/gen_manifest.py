@@ -14,14 +14,12 @@ DIM = "#FF9A8FB0"
 TEXT = "#FFE6E1F0"
 BG = "#FF0C0A10"
 
-# Player marker sizes per zoom level (the game draws it 5 world units tall; 7 and 14 px per
-# unit in the medium and close views, a fixed size in the whole-area view).
-# Player marker sizes per zoom level: the game draws it 5 world units tall (5, 8, 13 and 20 px
-# per unit in the four follow views, never under 30 px), a fixed size in the whole-area view.
-MARKER = {"bc.mk.z0": 30, "bc.mk.z1": 30, "bc.mk.z2": 40, "bc.mk.z3": 65, "bc.mk.z4": 100}
+# Player marker sizes per zoom level: the game draws it 5 world units tall (8, 13 and 20 px per
+# unit in the three views).
+MARKER = {"bc.mk.z0": 40, "bc.mk.z1": 65, "bc.mk.z2": 100}
 TITLE_W, TITLE_H = 640, 344  # must match kTitleW / kTitleH in 0100BA4026E94000.cpp
 ZOOM_W, ZOOM_H = 900, 130     # bc_ui::ZoomBarLayout
-ZOOM_LEVELS = 5
+ZOOM_LEVELS = 3
 ZOOM_X, ZOOM_Y = (W - ZOOM_W) // 2, H - ZOOM_H - 120
 ZOOM_TICKS = [150 + (750 - 150) * z // (ZOOM_LEVELS - 1) for z in range(ZOOM_LEVELS)]  # ZoomBarLayout::Tick
 ZOOM_BAR_Y = 44
@@ -37,6 +35,8 @@ PAUSED_W, PAUSED_H = 600, 200 # kPausedW / kPausedH
 PROMPT_W, PROMPT_H = 700, 70  # kPromptW / kPromptH
 VER_W, VER_H = 460, 50        # kVersionW / kVersionH
 LOAD_W, LOAD_H = 900, 80      # kLoadingW / kLoadingH
+TAB_W, TAB_H = 220, 64        # kTabW / kTabH
+EQ_MSG_W, EQ_MSG_H = 560, 56    # kEqMsgW / kEqMsgH
 
 
 def fade(group, ms):
@@ -90,15 +90,11 @@ map_page = {
          "x_bind": "bc.map.pox", "y_bind": "bc.map.poy", "need_bind": "bc.map.pshow"},
         {"type": "image", "rect": [0, 0, 2048, 1536], "src_bind": "bc.map.key",
          "x_bind": "bc.map.ox", "y_bind": "bc.map.oy", "need_bind": "bc.map.follow"},
-        # Whole-area view.
-        {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.map.akey",
-         "need_bind": "bc.map.area"},
-        # The game's player marker, centred; it only moves in the whole-area view.
+        # The game's player marker, centred: the map moves under it.
         *[marker(b, sz) for b, sz in MARKER.items()],
         # Pause (a menu or the pause screen open in the game): the map blurred under "Paused".
         {"type": "image", "rect": [0, 0, 2048, 1536], "src_bind": "bc.map.bkey",
          "x_bind": "bc.map.ox", "y_bind": "bc.map.oy", **fade("bc.paused.f", 260)},
-        {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.map.bakey", **fade("bc.paused.a", 260)},
         rect([0, 0, W, H], "#59000000", **fade("bc.paused", 260)),
         {"type": "image", "rect": [(W - PAUSED_W) // 2, (H - PAUSED_H) // 2, PAUSED_W, PAUSED_H],
          "src": "module:bc:ui:paused", **fade("bc.paused", 260)},
@@ -124,6 +120,7 @@ map_page = {
         # The map screen's gold-edged frame (game art, drawn by the module).
         {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:frame", "need_bind": "bc.ui.ok"},
         # Zoom: a small button (tap: next level out, wrapping to the closest; hold: the scale).
+        # Three levels (Far, Near, Close).
         {"type": "image", "rect": [ZBTN_X, ZBTN_Y, ZBTN_W, ZBTN_H], "src_bind": "bc.ui.zbtn",
          "need_bind": "bc.ui.ingame"},
         tap([ZBTN_X, ZBTN_Y, ZBTN_W, ZBTN_H], "act_zoom") | {"on_hold": "act_zbar_open", "hold_ms": 450,
@@ -136,8 +133,13 @@ map_page = {
         tap([ZOOM_X + ZOOM_W - 110, ZOOM_Y + ZOOM_BAR_Y - 52, 120, 110], "act_zoom_in") | {"need_bind": "bc.zbar"},
         *[tap([ZOOM_X + t - 70, ZOOM_Y + ZOOM_BAR_Y - 30, 140, 116], "act_zoom%d" % z) | {"need_bind": "bc.zbar"}
           for z, t in enumerate(ZOOM_TICKS)],
-        # Pins: the button opens the symbols under it; then a tap on the map puts a pin there
-        # (on a pin: another symbol replaces it, the same symbol takes it away).
+        # Equipment page (next to the zoom button).
+        {"type": "image", "rect": [ZBTN_X + ZBTN_W + 20, H - TAB_H - 30, TAB_W, TAB_H],
+         "src": "module:bc:ui:tab:eq:0", "need_bind": "bc.ui.ingame"},
+        tap([ZBTN_X + ZBTN_W + 20, H - TAB_H - 30, TAB_W, TAB_H], "act_eq") | {"need_bind": "bc.ui.ingame"},
+        # Pins (the game's own map markers): the button opens the symbols under it; then a tap
+        # on the map puts a marker there (on a marker: another symbol replaces it, the same
+        # symbol takes it away).
         {"type": "image", "rect": [PIN_X, PIN_Y, BTN_W, BTN_H], "src_bind": "bc.pin.btn", "need_bind": "bc.ui.ingame"},
         tap([PIN_X, PIN_Y, BTN_W, BTN_H], "act_pin_mode") | {"need_bind": "bc.ui.ingame"},
         *[{"type": "image", "rect": [PIN_X + BTN_W // 2 - PIN_CELL // 2, PIN_Y + BTN_H + 12 + k * (PIN_CELL + 8),
@@ -175,7 +177,8 @@ rows = [
     ("DATA SHIFT", "t", "bc.delta"),
     ("STATIC OFFSET", "i", "bc.sf"),
     ("SYSTEMS", "i", "bc.nsys"),
-    ("SYSTEM NAMES", "t2", "bc.systems"),
+    ("MENU  STATE  MS", "ii", "bc.menu.state", "bc.menu.ms"),
+    ("MENU LOG", "t", "bc.menu.log"),
     ("CHUNK X Y", "ii", "bc.chunk.x", "bc.chunk.y"),
     ("ROOM UID  EX UID", "ii", "bc.room.uid", "bc.ex.uid"),
     ("ROOM POS", "ii", "bc.room.x", "bc.room.y"),
@@ -245,6 +248,35 @@ inv_widgets += [
     button(W - 314, "MAP", "act_map", w=300),
 ]
 
+# Equipment page: the game's own pause menu (its Equipment tab and the Armoury, Relics and
+# Arcanas inventories), drawn by the module from the game's menu scene with what the player
+# wears and owns. One full-page picture (the one before it under it while a new one is drawn);
+# taps go to the module, which looks up what is under them in that picture.
+MENU_MAP_TAB = [113, 16, 201, 57]  # where the menu's Map tab lands on this page (bc_menupage)
+eq_widgets = [
+    rect([0, 0, W, H], "#FF000000"),
+    {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.menu.pkey", "need_bind": "bc.menu.ok"},
+    {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.menu.key", "need_bind": "bc.menu.ok"},
+    rect([0, 0, W, H], "#00000000", on_tap="act_menu_tap", payload="$tap", need_bind="bc.menu.ok"),
+    tap(MENU_MAP_TAB, "act_map") | {"need_bind": "bc.menu.tabs"},
+    # Out of an inventory (the game's B button), at the bottom left where the inventories are bare.
+    {"type": "image", "rect": [40, H - BTN_H - 24, BTN_W, BTN_H], "src": "module:bc:ui:btn:back",
+     "need_bind": "bc.menu.back"},
+    tap([40, H - BTN_H - 24, BTN_W, BTN_H], "act_menu_back") | {"need_bind": "bc.menu.back"},
+    # Until the menu is read (or without a save): a line, and the way back to the map.
+    {"type": "image", "rect": [(W - LABEL_W) // 2, (H - LABEL_H) // 2, LABEL_W, LABEL_H],
+     "src": "module:bc:ui:menuwait", "need_bind": "bc.menu.wait"},
+    {"type": "image", "rect": [(W - LABEL_W) // 2, (H - LABEL_H) // 2, LABEL_W, LABEL_H],
+     "src": "module:bc:ui:menunone", "need_bind": "bc.menu.none"},
+    {"type": "image", "rect": [(W - LABEL_W) // 2, (H - LABEL_H) // 2, LABEL_W, LABEL_H],
+     "src": "module:bc:ui:menufail", "need_bind": "bc.menu.fail"},
+    {"type": "image", "rect": [40, 26, BTN_W, BTN_H], "src": "module:bc:ui:btn:map", "need_bind": "bc.menu.plain"},
+    tap([40, 26, BTN_W, BTN_H], "act_map") | {"need_bind": "bc.menu.plain"},
+    # The game's answer to a change, in the band every view leaves free above the stats.
+    {"type": "image", "rect": [(W - EQ_MSG_W) // 2, 880, EQ_MSG_W, EQ_MSG_H], "src_bind": "bc.eq.msg",
+     **fade("bc.eq.msgshow", 200)},
+]
+
 debug_widgets += [
     rect([0, 984, W, 96], BAR),
     {"type": "image", "rect": [24, 1004, BTN_W, BTN_H], "src": "module:bc:ui:btn:map", "need_bind": "bc.ui.ok"},
@@ -280,10 +312,17 @@ manifest = {
         "act_debug": {"kind": "page", "page": "debug", "transition": "fade", "duration_ms": 150},
         "act_map": {"kind": "page", "page": "map", "transition": "fade", "duration_ms": 150},
         "act_inv": {"kind": "page", "page": "inventory", "transition": "fade", "duration_ms": 150},
+        "act_eq": {"kind": "page", "page": "equipment", "transition": "fade", "duration_ms": 150},
+        "act_menu_tap": {"kind": "module", "action": "menu_tap", "argument": "$payload"},
+        "act_menu_back": {"kind": "module", "action": "menu_back", "argument": 0},
     },
     "module_outputs": ["bc.*"],
+    # The guest helper (native/helper/bc_guest_helper.S, written by tools/gen_load_plan.py): the
+    # game's own equip and map-marker functions, called on the game's thread.
+    "load_plan": "guest/<build>/load-plan.json",
     "pages": [map_page, {"id": "debug", "title": "Debug", "widgets": debug_widgets},
-              {"id": "inventory", "title": "Inventory", "widgets": inv_widgets}],
+              {"id": "inventory", "title": "Inventory", "widgets": inv_widgets},
+              {"id": "equipment", "title": "Equipment", "widgets": eq_widgets}],
 }
 
 out = Path(__file__).resolve().parent.parent / "package" / "dualscreen" / "manifest.json"

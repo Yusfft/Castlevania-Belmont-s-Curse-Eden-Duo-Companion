@@ -41,11 +41,28 @@ public:
     void Paint(int x, int y, const bc_shade::Vec4& srgb, float a);
     /// Straight sRGB RGBA8.
     std::vector<std::uint8_t> Encode() const;
+    /// Coverage for everything drawn next: `a` holds w * h values (0..1) for the rect at
+    /// (x, y); outside it nothing is drawn.
+    struct ClipMask {
+        int x = 0, y = 0, w = 0, h = 0;
+        std::vector<float> a;
+        float At(int px, int py) const {
+            const int u = px - x, v = py - y;
+            return u < 0 || v < 0 || u >= w || v >= h ? 0.0f : a[static_cast<std::size_t>(v) * w + u];
+        }
+    };
+    void SetClip(const ClipMask* clip) { clip_ = clip; }
+    const ClipMask* Clip() const { return clip_; }
+    /// The canvas's alpha (w * h values).
+    std::vector<float> Alpha() const;
+    /// Clears to transparent.
+    void Clear();
 
 private:
     void Over(int x, int y, float r, float g, float b, float a);
     int w_, h_;
     std::vector<float> px_;
+    const ClipMask* clip_ = nullptr;
 };
 
 /// The map screen's frame around a w x h page (transparent inside).
@@ -61,6 +78,10 @@ std::vector<std::uint8_t> ZoomButton(const bc_levelmap::Common& c, int zoom, int
 /// A framed button with a caption; `active` lights it (a mode that is on).
 std::vector<std::uint8_t> Button(const bc_levelmap::Common& c, const std::string& text, int w, int h,
                                  bool active = false);
+/// An equipment cell: the game's cartouche frame, the item's name and a smaller line under it.
+/// `equipped` writes the name in gold, `selected` lights the frame.
+std::vector<std::uint8_t> ItemCell(const bc_levelmap::Common& c, const std::string& title, const std::string& sub,
+                                   bool equipped, bool selected, int w, int h);
 /// A square framed cell holding a sprite (a pin symbol); `selected` lights it.
 std::vector<std::uint8_t> IconCell(const bc_levelmap::Common& c, const std::string& sprite, bool selected, int w,
                                    int h);
@@ -88,7 +109,7 @@ extern const char* const kZoomNames[];
 
 /// Layout of the zoom bar image (pixels), shared with the page's tap areas.
 struct ZoomBarLayout {
-    static constexpr int kLevels = 5;
+    static constexpr int kLevels = 3;
     static constexpr int kW = 900, kH = 130;
     static constexpr int kButton = 84;               // the two buttons, square, at the ends
     static constexpr int kBarX0 = 150, kBarX1 = 750; // the scale (its ticks)

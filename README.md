@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.6.0)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.8.0)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -11,7 +11,9 @@ handheld (developed on an AYN Thor).
 | Eden Duo | 1.3.x (package declares `min_runtime` 22) |
 
 The package ships **no game assets**. The map, its icons and the title font are read at runtime
-from the player's own romfs and drawn by the native module.
+from the player's own romfs and drawn by the native module. Since 0.7.0 the package also carries
+a small guest helper of its own (a load plan, see below) so the second screen can change
+equipment and place the game's map markers.
 
 ## Features
 
@@ -31,17 +33,29 @@ from the player's own romfs and drawn by the native module.
 - **The game's map-screen interface.** The map screen's frame (darkened, so it does not draw the
   eye), the level banner in the level's colour, the zoom scale and buttons, all from the game's
   own art, with text in the game's font.
-- **Zoom.** Five levels: the whole area the player is in (the main map, a tower, a Z-room), then
-  four follow views from 5 to 20 pixels per world unit. The small zoom button shows the level;
-  tap it for the next level out (wrapping to the closest), hold it for the scale with its − / +
-  buttons and the levels' names. The page opens in the closest view, where the map's outlines
+- **Zoom.** Three follow views (Far, Near, Close: 8, 13 and 20 pixels per world unit). The small
+  zoom button shows the level; tap it for the next level out (wrapping to the closest), hold it
+  for the scale with its − / + buttons and the levels' names. The page opens in the closest view, where the map's outlines
   are drawn sharper than the game's 4-texels-per-unit map texture would give.
-- **Pins.** The Pin button opens three symbols (the game's marker art) under it; with one picked,
-  a tap on the map puts a pin there. Tapping a pin with another symbol picked changes it, with the
-  same symbol takes it away. Up to 24 pins, kept across sessions in a small text file of the
-  module's own (`dualscreen/persist/0100BA4026E94000/belmonts-curse-map-pins.txt` in the
-  emulator's data folder; on Android the app's private files folder). They are the page's own:
-  the game's map does not show them.
+- **Pins are the game's own map markers.** The Pin button opens three symbols (cross, chest,
+  eye; the game's marker art) under it; with one picked, a tap on the map places that marker in
+  the game itself (`MapMarkersComponent.AddMarker`), in the navigation zone under the tap, so it
+  shows on the game's map screen and is kept in the save. Tapping a marker with another symbol
+  picked changes it, with the same symbol removes it; this works on any marker on the map,
+  including ones placed in the game. The game's marker limit is respected. (The 0.6 page-only
+  pins file is no longer read.)
+- **The game's own Equipment menu** (the Equipment button at the bottom left of the map). The
+  game's pause menu is rebuilt from its scene in the romfs and laid out the way Unity lays it out:
+  the tab bar, the equipped arcana card (with its gold leaf), the weapon's illustration, the
+  relic slots and the picked relic's description, ATK / DEF / HP / MP, the heart and mana
+  upgrades, level and experience bar, with the player's own items. Tap the weapon card for the
+  Armoury, the arcana card for the Arcanas, a relic slot for the Relics (each the game's own
+  inventory screen, with its cards and descriptions). In an inventory the first tap on an item
+  shows it in the card, a second tap equips it; in the Relics, tap a slot to choose where a relic
+  goes and tap the chosen slot again to take its relic off. Back (bottom left) returns to the
+  equipment screen, the Map tab to the map. The change is made by the game's own
+  `Inventory.EquipWeapon / EquipSpell / EquipCharmAtSlot / UnequipCharmAtSlot`, so stats and the
+  in-game menus follow, and a line at the bottom says what the game answered.
 - **Game over.** When the player dies the page darkens and a card with the game's death icon and
   ornament glows up and fades (`DeathResultComponent.hasJustDied`, set by
   `DeathManagementSystem` the moment of death).
@@ -80,11 +94,12 @@ The level map of biome `<NN>` lives in its map scene
 - The map icons are the scene's `SpriteRenderer`s under `LevelMap*Item` components (save point,
   Z-door, biome transition, elevator, activable, landmark); the Z-door display's state lists
   (`discoveredUnenteredObjects`, `enteredUncompletedObjects`, ...) say which sprite shows when.
-- `LevelMapNavigationZone.cameraBounds`: the parts of the map the whole-area view fits.
+- `LevelMapNavigationZone.cameraBounds`: the parts of the map (main map, towers, Z-rooms) the game's own map screen fits.
 
 Readers: `native/bc_unity.*` (bounds-checked UnityFS / SerializedFile / type-tree reader with
 on-demand LZ4 block reads and managed references), `bc_tex.*` (RGBA, Alpha8, BC1/BC3/BC4 and
-the Switch block-linear layout; ASTC through Eden's decoder), `bc_levelmap.*` (the loader), `bc_cards.*` (the save screen's biome cards, read on
+the Switch block-linear layout; ASTC through Eden's decoder, in tiles of at most 2048 x 2048
+texels, its limit), `bc_levelmap.*` (the loader), `bc_cards.*` (the save screen's biome cards, read on
 demand for the title and loading pages).
 Drawing: `bc_shade.h` (the map shading), `bc_fog.h` (fog distance field), `bc_mapdraw.*`
 (tiles, fog, icons, marker), `bc_ui.*` (frame, banner, zoom scale, buttons and text from the
@@ -93,6 +108,26 @@ the game's own shaders. If a biome's level map cannot be read, the room layout f
 `data-world_biome_*` bundles is drawn instead (`bc_world.*`, `bc_render.*`, the 0.2 renderer).
 
 Bundle file names are pinned for this build, with a fallback that scans `aa/catalog.json`.
+
+### Game menu (romfs, at runtime)
+
+The game's pause menu is the uGUI / TextMeshPro hierarchy `GameMenuView` of
+`afm_scenes_scenes_gamemenu`. `bc_menu.*` reads it (GameObjects, RectTransforms, Images and their
+sprites in the game's sprite atlases, TextMeshPro texts with their English strings, layout groups,
+layout elements, content size and aspect ratio fitters, canvas groups, masks, Doozy start
+positions), lays it out with Unity's rules for a canvas matched to the page's width (the game's
+3840 x 2160 reference) and draws it with the game's art and font. `bc_menupage.*` fills it in the
+way the game's own display components do: each slot's `EquipmentViewEquippedItemController`,
+`InventoryItemDisplay*`, `ArcanaDisplay`, `IntStatValueDisplay`, `ExperienceBarDisplay`,
+`FragmentedCollectibleCountDisplay` and the inventories' `Inventory*Checker` components name the
+images, texts and stats they show, and their UnityEvents (which objects they show or hide) are run
+as the game runs them. Item names, descriptions (with their smart-string values), icons,
+illustrations, mana costs and notions come from the item assets, found by `itemID`. An absorbed
+arcana's art is drawn by the game with a gold-leaf material (`RedWine/UI/Image/Goldleaf`); the
+module approximates its still look (the painting a little darker, warmed to gold where the
+texture's alpha marks gold leaf). The menu's bundles are pinned in `native/bc_menu_bundles.inc`.
+The page is read in the background once a save is loaded (a few seconds) and each state is drawn
+on the asset worker (about 0.2-0.5 s); the tap targets come from the same layout.
 
 ### Live state (guest memory)
 
@@ -119,6 +154,27 @@ All locations come from the game's own `global-metadata.dat` (IL2CPP v31) and `m
 
 The position is read twice per sample and taken only when both reads agree (the game writes it from another core). A jump of more than 12 units is shown only once it holds for 6 samples, a missing position keeps the last good one for 3 s, and a change of world must hold 10 samples, so a stray value never moves the map.
 
+### Guest helper (load plan)
+
+Changing equipment and markers needs code running on the game's own thread. Eden Duo 1.3
+(runtime 19+) can load a *format-2 load plan* from the package:
+`package/dualscreen/guest/<build>/load-plan.json`, written by `tools/gen_load_plan.py` from
+`native/helper/bc_guest_helper.S` (my own code; the game's bytes appear only as the 4-byte
+`expected` value of the one patch).
+
+- The patch turns the first instruction of `ApplicationFlowManager.Update` (`main+0x40D4F00`,
+  once per frame on the main thread) into a branch to the helper, which runs the displaced
+  instruction and returns.
+- The module and the helper talk through Eden's guest mailbox (4 KiB): the module writes a
+  command (equip weapon / arcana / relic, unequip relic, add / remove / change marker), its
+  objects and the classes it saw, then bumps the request number; the helper checks everything
+  again (exact classes, the item in `_itemsInInventory`, the relic slot within
+  `_equippedCharms`, not while `ApplicationFlowManager._isLoading`, the request made after the
+  last emulator pause/resume via Eden's epoch word at `+0xFFC`), calls the game's method and
+  writes the result. Anything unexpected is refused, never called.
+- `tools/test_guest_helper.py <main image>` runs the patched `Update` and the helper in
+  Unicorn with stubbed game methods (needs `unicorn`, `pyelftools`, `clang`).
+
 Classes are checked by name before their fields are read, every read is bounded, and each step
 fails closed. Under NCE the data segment may sit at a constant shift from `main_base`; the
 module learns it once from `Il2CppMetadataRegistration` (`main+0x6A95908`), whose counts are fixed
@@ -137,7 +193,9 @@ cmake -S native -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build                                    # live reader against a fake guest
 build/bc_host_sim build/0100BA4026E94000.so <romfs> out   # drive the module through its C ABI
+build/bc_menu_tool <romfs> out/menu                       # draw the menu's four views from a romfs
 python3 tools/gen_manifest.py                             # regenerate package/dualscreen/manifest.json
+python3 tools/gen_load_plan.py                            # regenerate the guest helper's load plan
 ```
 
 `bc_host_sim` plays the host: it needs an ASTC decoder for the parchment, silhouettes and
@@ -168,6 +226,10 @@ Package with `tools/build_dualscreen_package.py` (see the workflow for the exact
   "completed" one, and districts are not tinted gold when completed (completion is not read yet).
 - Secret rooms stay hidden on the map even after they are found.
 - Names are the English ones.
+- The menu's Tarot, Journey and System tabs are not there yet (only Map and Equipment work).
+  The arcanas' talents and tasks and the inventories' gamepad prompts are left out; button
+  glyphs inside descriptions are dropped.
+- The guest helper (since 0.7.0) changes the game's state: keep a backup of your save while testing.
 
 ## Testing feedback
 

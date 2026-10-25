@@ -47,6 +47,7 @@
 #include "bc_levelmap.h"
 #include "bc_live.h"
 #include "bc_mapdraw.h"
+#include "bc_menupage.h"
 #include "bc_render.h"
 #include "bc_ui.h"
 #include "bc_world.h"
@@ -59,7 +60,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.6.0";
+constexpr const char* kVersion = "0.8.0";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -74,19 +75,18 @@ constexpr int kLabelW = 700, kLabelH = 70;
 // Re-centre the window when the player is this far (px) from its centre.
 constexpr double kRecentreX = (kWindowW - kCanvasW) / 2.0 - 90.0;
 constexpr double kRecentreY = (kWindowH - kCanvasH) / 2.0 - 60.0;
-// Pixels per world unit at each zoom level (0 = the whole area).
-constexpr double kZoomScale[] = {0.0, 5.0, 8.0, 13.0, 20.0};
+// Pixels per world unit at each zoom level, farthest first. (The whole-area view and the
+// 5 px/unit one were dropped in 0.6.1: too small to read on the second screen.)
+constexpr double kZoomScale[] = {8.0, 13.0, 20.0};
 constexpr int kZoomLevels = bc_ui::ZoomBarLayout::kLevels;
 static_assert(sizeof(kZoomScale) / sizeof(kZoomScale[0]) == kZoomLevels);
 constexpr int kZoomButtonW = 230, kZoomButtonH = 64;
 constexpr int kPinCell = 84;
-// The page's own pins: the symbols offered, the slots kept (persisted as runtime flags
-// "pin.v<i>", see the manifest), and how close a tap must be to an existing pin to touch it.
+// Pins are the game's own map markers (they show on the game's map too and are saved with the
+// game): three of its marker symbols are offered. A tap this close to a marker touches it.
 constexpr const char* kPinSprites[] = {"Map_MarkerSet_Cross", "Map_MarkerSet_Chest", "Map_MarkerSet_Eye"};
 constexpr int kPinTypes = 3;
-constexpr int kPinSlots = 24;
 constexpr double kPinTouchPx = 40.0;
-constexpr const char* kPinFile = "belmonts-curse-map-pins.txt";
 // The player marker: the game draws Map_PlayerIcon 5 units tall (the page sizes it per zoom
 // level), 0.7 units above the player.
 constexpr double kPlayerLift = 0.7;
@@ -227,6 +227,14 @@ const std::vector<std::string>& PinnedBundles() {
     return names;
 }
 
+/// The bundles the game menu page reads (bc_menupage), as named in this build.
+const std::vector<std::string>& MenuBundles() {
+    static const std::vector<std::string> names = {
+#include "bc_menu_bundles.inc"
+    };
+    return names;
+}
+
 /// Every "*.bundle" name in an Addressables catalog.
 std::vector<std::string> BundlesFromCatalog(std::string_view text) {
     std::vector<std::string> out;
@@ -263,45 +271,34 @@ struct Window {
     std::string key;
 };
 
-/// A pin the player put on the page's map (not in the game).
-struct Pin {
-    int biome = -1; // level map number; -1 = free slot
-    int type = 0;   // index into kPinSprites
-    float x = 0, y = 0;
-};
-
-/// Pins as stored in the persisted flags: 0 = empty; else bit 48 set, biome in bits 43..47,
-/// type in 40..42, x and y in quarter units (offset by 2^19) in 20..39 and 0..19. Under 2^53,
-/// so a JSON number keeps it exactly.
-s64 EncodePin(const Pin& p) {
-    if (p.biome < 0)
-        return 0;
-    const auto q = [](float v) {
-        return static_cast<s64>(std::clamp<long>(std::lround(v * 4.0f), -(1 << 19) + 1, (1 << 19) - 1) + (1 << 19));
-    };
-    return (s64{1} << 48) | (static_cast<s64>(p.biome & 31) << 43) | (static_cast<s64>(p.type & 7) << 40) |
-           (q(p.x) << 20) | q(p.y);
-}
-Pin DecodePin(s64 v) {
-    Pin p;
-    if (v <= 0 || !((v >> 48) & 1) || (v >> 49) != 0)
-        return p;
-    p.biome = static_cast<int>((v >> 43) & 31);
-    p.type = static_cast<int>((v >> 40) & 7);
-    if (p.type >= kPinTypes)
-        p.type = 0;
-    p.x = static_cast<float>(((v >> 20) & 0xFFFFF) - (1 << 19)) / 4.0f;
-    p.y = static_cast<float>((v & 0xFFFFF) - (1 << 19)) / 4.0f;
-    return p;
-}
-
 struct Title {
     std::string title, subtitle;
     bc_shade::Vec4 color{0.22f, 0.35f, 0.26f, 1.0f};
 };
 
+/// A request to the guest helper (mailbox layout and commands: native/helper/bc_guest_helper.S).
+struct HelperRequest {
+    u32 cmd = 0;
+    u64 target = 0, o1 = 0, o2 = 0, o3 = 0;
+    u64 c1 = 0; // the class object 1 must have (through its parents); 0 = its own class
+    s32 i = 0;
+    float x = 0, y = 0;
+    std::string done_msg; // shown on the equipment page when it is done ("" = none)
+    int retries = 0;
+};
+enum : u32 {
+    kCmdEquipWeapon = 1, kCmdEquipSpell, kCmdEquipCharm, kCmdUnequipCharm,
+    kCmdAddMarker, kCmdRemoveMarker, kCmdChangeMarker,
+};
+constexpr u32 kHelperMagic = 0x31484342; // 'BCH1'
+
+/// A cell of the equipment page: an item (or slot) name, a line under it, its state.
+struct Cell {
+    std::string title, sub;
+    int state = 0; // bit 0 equipped, bit 1 selected
+};
+
 struct Instance;
-void LoadPins(Instance* inst);
 
 struct Instance {
     EdenDsmodHostApi host{};
@@ -347,16 +344,54 @@ struct Instance {
     std::deque<std::pair<u64, Title>> titles;
     std::atomic<int> last_render_ms{0};
 
-    // Pins: kept in a small text file of the module's own (see PinStorePath), read at start
-    // and written on every change.
+    // Pin mode and symbol; `pins_rev` changes when the game's markers changed through the page
+    // (the window on screen is redrawn at once).
     std::mutex pin_mutex;
-    std::array<Pin, kPinSlots> pins{};
     u64 pins_rev = 1;
-    std::deque<std::pair<u64, std::shared_ptr<const std::vector<Pin>>>> pin_snapshots;
     bool pin_mode = false;
     int pin_type = 0;
-    std::string pin_store; // "" when no place to keep them was found
-    std::string pin_store_status = "-";
+    // The level map on screen (marker navigation zones for taps).
+    std::shared_ptr<const bc_levelmap::LevelMap> tap_lm;
+
+    // Guest helper (the load plan's code in the game, see native/helper): its mailbox, the
+    // requests waiting for it, the one it is serving. Tick thread (sample and actions).
+    EdenDsmodHostExtensions hx{};
+    std::atomic<bool> hx_ok{false};
+    std::deque<HelperRequest> hq;
+    HelperRequest h_cur;
+    bool h_inflight = false, h_init = false, h_seen = false;
+    u32 h_req = 0, h_frames = 0;
+    std::chrono::steady_clock::time_point h_frames_at{}, h_sent_at{};
+    std::string h_status = "-";
+    bool force_slow = false;     // read inventory and markers on the next sample
+    bool await_markers = false;  // redraw the map once the changed markers are read
+    // The answer to the last equipment change, shown for a few seconds (tick thread).
+    std::string eq_msg;
+    std::chrono::steady_clock::time_point eq_msg_at{};
+    std::deque<std::pair<u64, Cell>> cells; // under ex_mutex
+    // The game's equipment menu (bc_menupage), with assets of its own (the menu's bundles). It
+    // is read by menu_thread once a save is loaded and drawn on the asset worker, both under
+    // menu_mutex; `menu` is set once (menu_state 2) and read-only for the tick thread after that.
+    std::mutex menu_mutex;
+    std::shared_ptr<bc_levelmap::Assets> menu_assets;
+    std::unique_ptr<bc_levelmap::Codecs> menu_codecs;
+    std::unique_ptr<bc_menupage::Menu> menu;
+    std::shared_ptr<const bc_levelmap::Names> menu_names;
+    std::shared_ptr<const bc_levelmap::Common> menu_common;
+    std::string menu_log; // under menu_mutex
+    std::string menu_log_line; // its first lines, for the debug page (tick thread)
+    std::thread menu_thread;
+    std::atomic<int> menu_state{0}; // 0 not started, 1 loading, 2 ready, 3 failed
+    std::atomic<int> menu_ms{0};    // load time, then the last draw's
+    // The menu page's state (tick thread): the view (0 equipment, 1 weapons, 2 relics,
+    // 3 arcanas), the relic slot picked, the item inspected, the relics page.
+    int mv_view = 0, mv_slot = 0, mv_page = 0;
+    std::string mv_inspect;
+    // Page snapshots by id (the image key), and each drawn one's tap targets (ex_mutex).
+    std::deque<std::pair<u64, bc_menupage::Snapshot>> menu_snaps;
+    std::deque<std::pair<u64, std::vector<bc_menupage::Target>>> menu_targets;
+    std::atomic<u64> menu_drawn{0}; // the last snapshot drawn
+    u64 menu_key = 0;               // the snapshot on the page (tick thread)
     // How a canvas pixel maps to the world in the view on screen (for taps).
     bool tap_view_ok = false;
     int tap_biome = -1;
@@ -389,7 +424,7 @@ struct Instance {
     bool died_known = false, prev_died = false;
     std::chrono::steady_clock::time_point game_over_at{};
     bool game_over_seen = false;
-    std::string blur_key, blur_area_key;
+    std::string blur_key;
     // Loading page (tick thread).
     bool game_loading = false;
     std::chrono::steady_clock::time_point game_loading_since{};
@@ -410,6 +445,8 @@ struct Instance {
         lm_cv.notify_all();
         if (lm_thread.joinable())
             lm_thread.join();
+        if (menu_thread.joinable())
+            menu_thread.join();
     }
 
     bc_levelmap::Codecs Codecs() {
@@ -423,6 +460,63 @@ struct Instance {
             };
         }
         return c;
+    }
+
+    /// Reads a romfs file (the plain path, then with a leading slash).
+    bc_levelmap::RomfsRead Romfs() {
+        return [this](const std::string& path, std::uint64_t off, void* out, std::size_t size) -> std::size_t {
+            if (!host.read_romfs)
+                return 0;
+            std::size_t n = host.read_romfs(host.userdata, path.c_str(), off, out, size);
+            if (n == 0)
+                n = host.read_romfs(host.userdata, ("/" + path).c_str(), off, out, size);
+            return n;
+        };
+    }
+
+    /// Reads the game's menu in the background (once).
+    void StartMenu() {
+        menu_state = 1;
+        menu_thread = std::thread([this] {
+            std::shared_ptr<const bc_levelmap::Names> n;
+            std::shared_ptr<const bc_levelmap::Common> c;
+            {
+                std::lock_guard lock(world_mutex);
+                n = names;
+                c = common;
+            }
+            const auto t0 = std::chrono::steady_clock::now();
+            std::string log;
+            bool ok = false;
+            try {
+                if (n && c && !stopping) {
+                    auto a = std::make_shared<bc_levelmap::Assets>(Romfs(), MenuBundles());
+                    auto codecs = std::make_unique<bc_levelmap::Codecs>(Codecs());
+                    auto m = std::make_unique<bc_menupage::Menu>(*a, *codecs);
+                    std::lock_guard lock(menu_mutex);
+                    ok = m->Load(*n, c->font, &log);
+                    if (ok) {
+                        menu_assets = std::move(a);
+                        menu_codecs = std::move(codecs);
+                        menu = std::move(m);
+                        menu_names = n;
+                        menu_common = c;
+                    }
+                } else {
+                    log = "map assets missing\n";
+                }
+            } catch (...) {
+                log += "menu load failed (exception)\n";
+                ok = false;
+            }
+            {
+                std::lock_guard lock(menu_mutex);
+                menu_log = log;
+            }
+            menu_ms = static_cast<int>(
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            menu_state = ok ? 2 : 3;
+        });
     }
 
     void StartLoader() {
@@ -440,15 +534,7 @@ struct Instance {
                 return catalog_names;
             };
             try {
-                bc_levelmap::RomfsRead rr = [this](const std::string& path, std::uint64_t off, void* out,
-                                                    std::size_t size) -> std::size_t {
-                    if (!host.read_romfs)
-                        return 0;
-                    std::size_t n = host.read_romfs(host.userdata, path.c_str(), off, out, size);
-                    if (n == 0)
-                        n = host.read_romfs(host.userdata, ("/" + path).c_str(), off, out, size);
-                    return n;
-                };
+                const bc_levelmap::RomfsRead rr = Romfs();
                 std::vector<std::string> names_list = PinnedBundles();
                 const std::string probe = std::string("Data/StreamingAssets/aa/Switch/") + names_list[0];
                 if (rr(probe, 0, nullptr, 0) == 0) {
@@ -664,10 +750,6 @@ void* Create(const EdenDsmodHostApi* host, const char*) {
         inst->host = *host;
         inst->title_card = static_cast<int>(
             static_cast<u64>(std::chrono::steady_clock::now().time_since_epoch().count()) / 1000 % bc_cards::kCount);
-        {
-            std::lock_guard lock(inst->pin_mutex);
-            LoadPins(inst);
-        }
         inst->StartLoader();
         if (host->log)
             host->log(host->userdata, EDEN_DSMOD_LOG_INFO, "BelmontsCurse map: module created");
@@ -802,19 +884,6 @@ std::string MapKey(const Window& w) {
     return key;
 }
 
-/// The pins on screen, saved by revision for the renders that ask for it.
-std::shared_ptr<const std::vector<Pin>> PinSnapshot(Instance* inst, u64 rev) {
-    std::lock_guard lock(inst->pin_mutex);
-    if (auto p = Instance::Lookup(inst->pin_snapshots, rev))
-        return *p;
-    auto v = std::make_shared<std::vector<Pin>>();
-    for (const Pin& p : inst->pins)
-        if (p.biome >= 0)
-            v->push_back(p);
-    Instance::Remember(inst->pin_snapshots, rev, std::shared_ptr<const std::vector<Pin>>(v), 8);
-    return v;
-}
-
 /// The exploration summary for the debug page (walks every explored room).
 void BuildFogTexts(const bc_live::State& s, std::vector<std::pair<std::string, std::string>>& texts,
                    std::vector<std::pair<std::string, s64>>& ints) {
@@ -890,7 +959,6 @@ void BuildInventoryTexts(Instance* inst, const bc_live::State& s, std::vector<st
 
 void PublishPins(Instance* inst, const EdenDsmodHostApi* h) {
     std::lock_guard lock(inst->pin_mutex);
-    PublishT(h, "bc.pin.store", inst->pin_store_status);
     PublishI(h, "bc.pin.mode", inst->pin_mode ? 1 : 0);
     PublishI(h, "bc.pin.plain", inst->pin_mode ? 0 : 1);
     char key[48];
@@ -901,10 +969,410 @@ void PublishPins(Instance* inst, const EdenDsmodHostApi* h) {
         PublishT(h, name, key);
     }
     PublishT(h, "bc.pin.btn", inst->pin_mode ? "module:bc:ui:btn:pin:1" : "module:bc:ui:btn:pin:0");
-    int count = 0;
-    for (const Pin& p : inst->pins)
-        count += p.biome >= 0;
-    PublishI(h, "bc.pin.n", count);
+    PublishI(h, "bc.pin.n", static_cast<s64>(inst->live.markers.size()));
+}
+
+// ---- guest helper client
+
+void EquipMessage(Instance* inst, std::string msg) {
+    inst->eq_msg = std::move(msg);
+    inst->eq_msg_at = std::chrono::steady_clock::now();
+}
+
+/// What a helper result means to the player ("" for done).
+const char* HelperError(u32 result) {
+    switch (result) {
+    case 0: return "";
+    case 3: return "The game was paused: try again";
+    case 4: return "The game is loading: try again";
+    case 5: return "That item is not in the inventory";
+    case 6: return "No such relic slot";
+    default: return "The game refused the change";
+    }
+}
+
+/// Serves the helper: collects the answer to the request in flight, sends the next one. The
+/// helper runs once a frame inside the game's ApplicationFlowManager::Update.
+void HelperStep(Instance* inst, const bc_live::Memory& mem) {
+    if (!inst->hx_ok) {
+        inst->h_status = "off (no load plan)";
+        inst->hq.clear();
+        return;
+    }
+    const auto& hx = inst->hx;
+    const auto load32 = [&](u32 off, u32& v) { return hx.load_u32 && hx.load_u32(hx.userdata, off, &v) != 0; };
+    const auto load64 = [&](u32 off, u64& v) { return hx.load_u64 && hx.load_u64(hx.userdata, off, &v) != 0; };
+    const auto store32 = [&](u32 off, u32 v) { return hx.store_u32 && hx.store_u32(hx.userdata, off, v) != 0; };
+    const auto store64 = [&](u32 off, u64 v) { return hx.store_u64 && hx.store_u64(hx.userdata, off, v) != 0; };
+    const auto now = std::chrono::steady_clock::now();
+    const auto since = [&](std::chrono::steady_clock::time_point t) {
+        return std::chrono::duration<double>(now - t).count();
+    };
+    u32 frames = 0;
+    if (!load32(0x04, frames)) {
+        inst->h_status = "no mailbox";
+        return;
+    }
+    if (frames != inst->h_frames) {
+        if (inst->h_frames != 0 || inst->h_init)
+            inst->h_seen = true;
+        inst->h_frames = frames;
+        inst->h_frames_at = now;
+    }
+    const bool alive = inst->h_seen && since(inst->h_frames_at) < 2.0;
+    if (!inst->h_init) {
+        u32 done = 0;
+        if (!load32(0x60, done) || !store32(0x00, kHelperMagic))
+            return;
+        inst->h_req = done;
+        inst->h_init = true;
+    }
+    inst->h_status = alive ? (inst->h_inflight ? "busy" : "ready") : "waiting for the game";
+    if (inst->h_inflight) {
+        u32 done = 0, result = 0;
+        u64 value = 0;
+        if (load32(0x60, done) && done == inst->h_req && load32(0x64, result) && load64(0x68, value)) {
+            inst->h_inflight = false;
+            HelperRequest r = std::move(inst->h_cur);
+            if ((result == 3 || result == 4) && r.retries < 3) {
+                ++r.retries; // paused or loading in between: once more
+                inst->hq.push_front(std::move(r));
+                return;
+            }
+            inst->force_slow = true;
+            if (r.cmd >= kCmdAddMarker)
+                inst->await_markers = true;
+            if (result == 0) {
+                if (!r.done_msg.empty())
+                    EquipMessage(inst, r.done_msg);
+            } else {
+                EquipMessage(inst, HelperError(result));
+            }
+        } else if (since(inst->h_sent_at) > 3.0) {
+            inst->h_inflight = false; // not served (the game stopped running its update)
+            EquipMessage(inst, "The game did not answer");
+        }
+        return;
+    }
+    if (inst->hq.empty())
+        return;
+    if (!alive) {
+        inst->hq.clear();
+        EquipMessage(inst, "The game is not ready");
+        return;
+    }
+    HelperRequest r = std::move(inst->hq.front());
+    inst->hq.pop_front();
+    const auto class_of = [&](u64 obj) -> u64 {
+        u64 k = 0;
+        return obj && mem.read(obj, &k, sizeof k) ? k : 0;
+    };
+    u32 token = 0;
+    float x = r.x, y = r.y;
+    u32 xb = 0, yb = 0;
+    std::memcpy(&xb, &x, 4);
+    std::memcpy(&yb, &y, 4);
+    const u64 tcls = class_of(r.target);
+    const u64 c1 = r.c1 ? r.c1 : class_of(r.o1), c2 = class_of(r.o2), c3 = class_of(r.o3);
+    if (!tcls || !load32(0xFFC, token))
+        return;
+    const bool ok = store32(0x0C, r.cmd) && store32(0x10, token) && store32(0x14, static_cast<u32>(r.i)) &&
+                    store32(0x18, xb) && store32(0x1C, yb) && store64(0x20, r.target) && store64(0x28, r.o1) &&
+                    store64(0x30, r.o2) && store64(0x38, r.o3) && store64(0x40, tcls) && store64(0x48, c1) &&
+                    store64(0x50, c2) && store64(0x58, c3);
+    if (!ok)
+        return;
+    u32 next = inst->h_req + 1;
+    if (!store32(0x08, next))
+        return;
+    inst->h_req = next;
+    inst->h_inflight = true;
+    inst->h_cur = std::move(r);
+    inst->h_sent_at = now;
+}
+
+// ---- the game's equipment menu
+
+constexpr int kEqMsgW = 560, kEqMsgH = 56;
+constexpr int kTabW = 220, kTabH = 64;
+
+std::string CellKey(Instance* inst, const Cell& c) {
+    const u64 id = Fnv(Fnv(Fnv(0xcbf29ce484222325ULL, c.title), "|" + c.sub), std::to_string(c.state));
+    {
+        std::lock_guard lock(inst->ex_mutex);
+        Instance::Remember(inst->cells, id, c, 96);
+    }
+    char key[48];
+    std::snprintf(key, sizeof key, "module:bc:ui:cell:%llx", static_cast<unsigned long long>(id));
+    return key;
+}
+
+std::string MenuKey(u64 id) {
+    char key[48];
+    std::snprintf(key, sizeof key, "module:bc:menu:%016llx", static_cast<unsigned long long>(id));
+    return key;
+}
+
+/// What the menu page shows now: the page state and the live inventory.
+bc_menupage::Snapshot MenuSnapshot(const Instance* inst, const bc_live::State& s) {
+    bc_menupage::Snapshot sn;
+    sn.view = inst->mv_view;
+    sn.slot = inst->mv_slot;
+    sn.inspect = inst->mv_inspect;
+    sn.page = inst->mv_page;
+    const auto& inv = s.inv;
+    sn.ok = inv.ok;
+    sn.weapon = inv.weapon.ptr ? inv.weapon.id : std::string{};
+    sn.spell = inv.spell.ptr ? inv.spell.id : std::string{};
+    for (const auto& c : inv.charms)
+        sn.charms.push_back(c.ptr ? c.id : std::string{});
+    for (const auto& it : inv.items)
+        if (it.ptr && it.type >= 1 && it.type <= 3)
+            sn.owned.push_back(it.id);
+    for (const auto& st : inv.stats)
+        sn.stats[st.name] = st.value;
+    if (inv.level_ok) {
+        sn.level = inv.level, sn.xp = inv.xp, sn.xp_max = inv.xp_max;
+        sn.stats.emplace("Level", inv.level);
+        sn.stats.emplace("ExperienceCurrent", inv.xp);
+        sn.stats.emplace("ExperienceMax", inv.xp_max);
+    }
+    return sn;
+}
+
+void PublishMenu(Instance* inst, const EdenDsmodHostApi* h, const bc_live::State& s, bool ingame, bool map_ready) {
+    // Read once a save is loaded and its map is up (so the map comes first).
+    if (ingame && map_ready && inst->menu_state == 0)
+        inst->StartMenu();
+    const int st = inst->menu_state;
+    const bool ok = ingame && st == 2 && s.inv.ok;
+    PublishI(h, "bc.menu.state", st);
+    PublishI(h, "bc.menu.ms", inst->menu_ms);
+    if (st >= 2) {
+        std::unique_lock lock(inst->menu_mutex, std::try_to_lock); // a draw may hold it
+        if (lock.owns_lock()) {
+            std::string first = inst->menu_log.substr(0, inst->menu_log.find('\n'));
+            if (inst->menu_log.find('\n') != std::string::npos && inst->menu_log.find('\n') + 1 < inst->menu_log.size())
+                first += " | " + inst->menu_log.substr(inst->menu_log.find('\n') + 1, 80);
+            for (auto& c : first)
+                if (c == '\n')
+                    c = ' ';
+            inst->menu_log_line = first;
+        }
+    }
+    PublishT(h, "bc.menu.log", inst->menu_log_line);
+    PublishI(h, "bc.menu.ok", ok);
+    PublishI(h, "bc.menu.wait", ingame && (st <= 1 || (st == 2 && !s.inv.ok)));
+    PublishI(h, "bc.menu.none", !ingame);
+    PublishI(h, "bc.menu.fail", ingame && st == 3);
+    PublishI(h, "bc.menu.plain", !ok);
+    if (ok) {
+        const auto sn = MenuSnapshot(inst, s);
+        const u64 id = sn.Hash();
+        {
+            std::lock_guard lock(inst->ex_mutex);
+            Instance::Remember(inst->menu_snaps, id, sn, 8);
+        }
+        inst->menu_key = id;
+        PublishT(h, "bc.menu.key", MenuKey(id));
+        const u64 drawn = inst->menu_drawn;
+        PublishT(h, "bc.menu.pkey", drawn ? MenuKey(drawn) : "");
+        PublishI(h, "bc.menu.tabs", sn.view == 0);
+        PublishI(h, "bc.menu.back", sn.view != 0);
+    } else {
+        PublishT(h, "bc.menu.key", "");
+        PublishT(h, "bc.menu.pkey", "");
+        PublishI(h, "bc.menu.tabs", 0);
+        PublishI(h, "bc.menu.back", 0);
+    }
+    // The last answer of the game, for a few seconds.
+    const bool msg = !inst->eq_msg.empty() &&
+                     std::chrono::duration<double>(std::chrono::steady_clock::now() - inst->eq_msg_at).count() < 4.0;
+    PublishI(h, "bc.eq.msgshow", msg);
+    PublishT(h, "bc.eq.msg", msg ? CellKey(inst, {inst->eq_msg, "", 4}) : "");
+    PublishI(h, "bc.eq.helper", inst->hx_ok && inst->h_seen);
+}
+
+/// An item's name for messages.
+std::string MenuItemName(Instance* inst, const std::string& id) {
+    std::string n;
+    if (inst->menu_state == 2 && inst->menu)
+        n = inst->menu->Name(id);
+    return n.empty() ? id : n;
+}
+
+/// Equips an owned item through the game (the helper): a weapon, an arcana, or a relic into
+/// relic slot `slot` (a relic worn in another slot moves there).
+bool MenuEquip(Instance* inst, const std::string& id, int slot) {
+    const auto& s = inst->live;
+    const auto& inv = s.inv;
+    if (!inv.ok || !inv.inventory || !inst->hx_ok)
+        return false;
+    const bc_live::Item* item = nullptr;
+    for (const auto& it : inv.items)
+        if (it.ptr && it.id == id)
+            item = &it;
+    if (!item)
+        return false;
+    const std::string nm = MenuItemName(inst, id);
+    HelperRequest r;
+    r.target = inv.inventory;
+    r.o1 = item->ptr;
+    r.done_msg = "Equipped " + nm;
+    if (item->type == 1) {
+        if (item->ptr == inv.weapon.ptr || !s.weapon_class)
+            return false;
+        r.cmd = kCmdEquipWeapon;
+        r.c1 = s.weapon_class;
+    } else if (item->type == 2) {
+        if (item->ptr == inv.spell.ptr || !s.spell_class)
+            return false;
+        r.cmd = kCmdEquipSpell;
+        r.c1 = s.spell_class;
+    } else if (item->type == 3) {
+        if (!s.charm_class || slot < 0 || slot >= static_cast<int>(inv.charms.size()))
+            return false;
+        for (std::size_t j = 0; j < inv.charms.size(); ++j) {
+            if (inv.charms[j].ptr != item->ptr)
+                continue;
+            if (static_cast<int>(j) == slot)
+                return false; // already there
+            // Worn in another slot: taken off there first.
+            HelperRequest u;
+            u.cmd = kCmdUnequipCharm;
+            u.target = inv.inventory;
+            u.i = static_cast<s32>(j);
+            inst->hq.push_back(std::move(u));
+        }
+        r.cmd = kCmdEquipCharm;
+        r.c1 = s.charm_class;
+        r.i = slot;
+    } else {
+        return false;
+    }
+    inst->hq.push_back(std::move(r));
+    return true;
+}
+
+bool MenuUnequipRelic(Instance* inst, int slot) {
+    const auto& inv = inst->live.inv;
+    if (!inv.ok || !inv.inventory || !inst->hx_ok || slot < 0 || slot >= static_cast<int>(inv.charms.size()) ||
+        !inv.charms[static_cast<std::size_t>(slot)].ptr)
+        return false;
+    HelperRequest u;
+    u.cmd = kCmdUnequipCharm;
+    u.target = inv.inventory;
+    u.i = slot;
+    u.done_msg = "Removed " + MenuItemName(inst, inv.charms[static_cast<std::size_t>(slot)].id);
+    inst->hq.push_back(std::move(u));
+    return true;
+}
+
+/// A tap on the menu page (canvas point packed x high, y low): what is under it in the picture
+/// on screen, the way the game's own menu answers its buttons.
+bool MenuTap(Instance* inst, int64_t packed) {
+    const float cx = static_cast<float>(static_cast<std::int32_t>(static_cast<u64>(packed) >> 32));
+    const float cy = static_cast<float>(static_cast<std::int32_t>(static_cast<u64>(packed) & 0xFFFFFFFFu));
+    std::optional<std::vector<bc_menupage::Target>> targets;
+    {
+        std::lock_guard lock(inst->ex_mutex);
+        targets = Instance::Lookup(inst->menu_targets, inst->menu_key);
+        if (!targets)
+            targets = Instance::Lookup(inst->menu_targets, inst->menu_drawn.load());
+    }
+    if (!targets)
+        return false;
+    const bc_menupage::Target* hit = nullptr;
+    for (const auto& t : *targets)
+        if (t.Contains(cx, cy)) {
+            hit = &t;
+            break;
+        }
+    if (!hit)
+        return false;
+    using T = bc_menupage::Target;
+    const auto& inv = inst->live.inv;
+    const int slots = static_cast<int>(inv.charms.size());
+    const auto charm = [&](int i) {
+        return i >= 0 && i < slots && inv.charms[static_cast<std::size_t>(i)].ptr ? inv.charms[static_cast<std::size_t>(i)].id
+                                                                              : std::string{};
+    };
+    switch (hit->kind) {
+    case T::Tab:
+        return false; // Map has its own button; Tarot, Journey and System are not on this page
+    case T::OpenWeapons:
+        inst->mv_view = 1, inst->mv_inspect = inv.weapon.ptr ? inv.weapon.id : "";
+        return true;
+    case T::OpenArcanas:
+        inst->mv_view = 3, inst->mv_inspect = inv.spell.ptr ? inv.spell.id : "";
+        return true;
+    case T::OpenRelics:
+        inst->mv_view = 2, inst->mv_page = 0, inst->mv_inspect = charm(inst->mv_slot);
+        return true;
+    case T::RelicSlot:
+        if (hit->index >= slots)
+            return false; // not unlocked yet
+        if (inst->mv_view == 0) {
+            inst->mv_view = 2, inst->mv_page = 0, inst->mv_slot = hit->index, inst->mv_inspect = charm(hit->index);
+            return true;
+        }
+        if (inst->mv_slot == hit->index && !charm(hit->index).empty())
+            return MenuUnequipRelic(inst, hit->index); // the picked slot again: take its relic off
+        inst->mv_slot = hit->index;
+        return true;
+    case T::Item:
+        if (inst->mv_inspect != hit->item) {
+            inst->mv_inspect = hit->item; // first tap: shown in the card
+            return true;
+        }
+        if (inst->mv_view == 2 && charm(inst->mv_slot) == hit->item)
+            return MenuUnequipRelic(inst, inst->mv_slot);
+        return MenuEquip(inst, hit->item, inst->mv_slot); // second tap: equipped
+    case T::PrevPage:
+        inst->mv_page = std::max(0, inst->mv_page - 1);
+        return true;
+    case T::NextPage:
+        inst->mv_page = std::min(1, inst->mv_page + 1);
+        return true;
+    case T::Close:
+        if (hit->index < 0)
+            return false; // the inventory's own panel
+        inst->mv_view = 0, inst->mv_inspect.clear();
+        return true;
+    }
+    return false;
+}
+
+bool LoadMenu(Instance* inst, u64 id, void* receiver, EdenDsmodImageSink sink) {
+    if (inst->menu_state != 2)
+        return false;
+    std::optional<bc_menupage::Snapshot> sn;
+    {
+        std::lock_guard lock(inst->ex_mutex);
+        sn = Instance::Lookup(inst->menu_snaps, id);
+    }
+    if (!sn)
+        return false;
+    std::vector<bc_menupage::Target> targets;
+    std::vector<u8> px;
+    {
+        std::lock_guard lock(inst->menu_mutex);
+        if (!inst->menu)
+            return false;
+        const auto t0 = std::chrono::steady_clock::now();
+        px = inst->menu->Render(*sn, kCanvasW, kCanvasH, &targets);
+        inst->menu_ms = static_cast<int>(
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
+    if (px.size() != static_cast<std::size_t>(kCanvasW) * kCanvasH * 4)
+        return false;
+    {
+        std::lock_guard lock(inst->ex_mutex);
+        Instance::Remember(inst->menu_targets, id, std::move(targets), 8);
+    }
+    sink(receiver, kCanvasW, kCanvasH, px.data(), px.size());
+    inst->menu_drawn = id;
+    return true;
 }
 
 void Sample(void* p, const EdenDsmodHostApi* h) {
@@ -922,7 +1390,8 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         };
         // The exploration dictionary is walked once a second. Debug values are published every
         // sample: the host clears a value that a sample does not publish.
-        const bool with_fog = inst->samples % 60 == 1;
+        const bool with_fog = inst->samples % 60 == 1 || inst->force_slow;
+        inst->force_slow = false;
         const bool debug = true;
         bc_live::State fresh;
         inst->reader.Sample(mem, with_fog, fresh);
@@ -937,6 +1406,13 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             fresh.markers = std::move(inst->live.markers);
             fresh.death = std::move(inst->live.death);
             fresh.inv = std::move(inst->live.inv);
+            fresh.markers_comp = inst->live.markers_comp;
+            fresh.markers_limit_mode = inst->live.markers_limit_mode;
+            fresh.markers_limit = inst->live.markers_limit;
+            fresh.marker_types = std::move(inst->live.marker_types);
+            fresh.weapon_class = inst->live.weapon_class;
+            fresh.spell_class = inst->live.spell_class;
+            fresh.charm_class = inst->live.charm_class;
         }
         if (!with_fog)
             fresh.last_save_room = inst->live.last_save_room.empty() ? fresh.last_save_room : inst->live.last_save_room;
@@ -958,6 +1434,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 }
             }
         }
+        HelperStep(inst, mem);
         const bc_live::State& s = inst->live;
         const auto world = inst->World();
         const bool world_ready = world && !world->biomes.empty();
@@ -965,6 +1442,12 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         {
             std::lock_guard lock(inst->lm_mutex);
             legacy_mode = inst->lm_failed.count(s.world_name) != 0;
+        }
+        if (with_fog && inst->await_markers) {
+            // The markers the page changed are read: redraw the map with them now.
+            inst->await_markers = false;
+            std::lock_guard lock(inst->pin_mutex);
+            ++inst->pins_rev;
         }
         if (const u64 id = ExploreId(s, world_ready, legacy_mode); id != inst->explore_id || !inst->exploration) {
             inst->explore_id = id;
@@ -1136,11 +1619,11 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             }
         }
 
-        bool follow = false, area = false, marker = false;
+        bool follow = false, marker = false;
         double mk_dx = 0, mk_dy = 0;
         const int zoom = std::clamp(inst->zoom, 0, kZoomLevels - 1);
         if ((lm || legacy) && number >= 0) {
-            if (zoom > 0 && pos_mode) {
+            if (pos_mode) {
                 follow = true;
                 const double scale = kZoomScale[zoom];
                 Window& cur = inst->cur;
@@ -1170,8 +1653,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                         cur.cx = static_cast<int>(std::lround(pwx));
                         cur.cy = static_cast<int>(std::lround(pwy));
                     }
-                    if (!pins_changed || redraw_due || far || !same_view)
-                        cur.explore = inst->explore_id;
+                    cur.explore = inst->explore_id;
                     cur.pins = pins_rev;
                     cur.key = MapKey(cur);
                 }
@@ -1194,6 +1676,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                     inst->tap_view.w = kCanvasW, inst->tap_view.h = kCanvasH;
                     inst->tap_view_ok = !cur.legacy;
                     inst->tap_biome = number;
+                    inst->tap_lm = lm;
                 }
                 PublishT(h, "bc.map.key", cur.key);
                 PublishI(h, "bc.map.ox", std::lround(ox));
@@ -1209,57 +1692,11 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 PublishI(h, "bc.map.pshow", prev_ok);
                 marker = true;
                 mk_dy = -kPlayerLift * scale;
-            } else if (zoom == 0) {
-                // Whole area on screen; the marker moves instead of the map.
-                area = true;
-                inst->cur.valid = false;
-                inst->prev.valid = false;
-                Window w;
-                w.legacy = !lm;
-                w.biome = number;
-                w.zoom = 0;
-                w.explore = inst->explore_id;
-                {
-                    std::lock_guard lock(inst->pin_mutex);
-                    w.pins = inst->pins_rev;
-                }
-                if (lm && pos_mode) {
-                    // The navigation zone the player is in (the main map, a tower, a Z-room...).
-                    w.cx = lm->NavZoneAt(static_cast<float>(pwx), static_cast<float>(pwy));
-                }
-                {
-                    std::lock_guard lock(inst->pin_mutex);
-                    inst->tap_view_ok = lm != nullptr;
-                    inst->tap_biome = number;
-                    if (lm)
-                        inst->tap_view = bc_mapdraw::FitZone(*lm, w.cx, kCanvasW, kCanvasH);
-                }
-                PublishT(h, "bc.map.akey", MapKey(w));
-                if (pos_mode) {
-                    double px = 0, py = 0;
-                    if (lm) {
-                        const auto v = bc_mapdraw::FitZone(*lm, w.cx, kCanvasW, kCanvasH);
-                        v.WorldToPixel(pwx, pwy, px, py);
-                        py -= kPlayerLift * v.scale;
-                    } else {
-                        bc_render::Params prm;
-                        prm.zoom = 0;
-                        prm.out_w = kCanvasW;
-                        prm.out_h = kCanvasH;
-                        const auto view = bc_render::ComputeView(*legacy, prm);
-                        double tx, ty;
-                        bc_render::WorldToTile(*legacy, pwx, pwy, tx, ty);
-                        bc_render::TileToPixel(view, tx, ty, px, py);
-                    }
-                    mk_dx = px - kCanvasW / 2.0;
-                    mk_dy = py - kCanvasH / 2.0;
-                    marker = true;
-                }
             }
         } else {
             PublishI(h, "bc.map.pshow", 0);
         }
-        if (!follow && !area) {
+        if (!follow) {
             std::lock_guard lock(inst->pin_mutex);
             inst->tap_view_ok = false;
         }
@@ -1277,7 +1714,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             PublishI(h, k.c_str(), v);
         {
             std::lock_guard lock(inst->pin_mutex);
-            PublishT(h, "bc.savepins", s.last_save_room + "  | pins " + inst->pin_store_status);
+            PublishT(h, "bc.savepins", s.last_save_room + "  | helper " + inst->h_status);
         }
         {
             // Game over: from the moment the game marks the player dead.
@@ -1298,27 +1735,12 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             PublishT(h, "bc.go.key", gk);
             PublishI(h, "bc.go.show", game_over);
             // Pause: the map blurred under "Paused" while a menu or the pause screen is open.
-            const bool paused = s.paused && !game_over && (follow || area);
+            const bool paused = s.paused && !game_over && follow;
             if (follow && inst->cur.valid && !inst->cur.legacy && inst->cur.key.rfind("module:bc:", 0) == 0)
                 inst->blur_key = "module:bc:blur:" + inst->cur.key.substr(10);
-            if (area && lm) {
-                Window w;
-                w.biome = number;
-                w.zoom = 0;
-                w.explore = inst->explore_id;
-                if (pos_mode)
-                    w.cx = lm->NavZoneAt(static_cast<float>(pwx), static_cast<float>(pwy));
-                {
-                    std::lock_guard lock(inst->pin_mutex);
-                    w.pins = inst->pins_rev;
-                }
-                inst->blur_area_key = "module:bc:blur:" + MapKey(w).substr(10);
-            }
             PublishT(h, "bc.map.bkey", inst->blur_key);
-            PublishT(h, "bc.map.bakey", inst->blur_area_key);
             PublishI(h, "bc.paused", paused);
             PublishI(h, "bc.paused.f", paused && follow && !inst->blur_key.empty());
-            PublishI(h, "bc.paused.a", paused && area && !inst->blur_area_key.empty());
         }
         {
             // The zoom scale closes by itself after a while.
@@ -1341,7 +1763,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             PublishT(h, "bc.ui.zoom", zk);
             PublishI(h, "bc.ui.ok", ui_ok);
             PublishI(h, "bc.ui.plain", !ui_ok);
-            PublishI(h, "bc.ui.waitplain", !ui_ok && !(follow || area));
+            PublishI(h, "bc.ui.waitplain", !ui_ok && !follow);
 
             // Title page (no save loaded) and loading page (the game loading a scene, or the map
             // not shown yet in game). Their image keys appear only once the art can be drawn.
@@ -1351,7 +1773,7 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             inst->game_loading = s.gs_loading;
             const bool game_loading =
                 s.gs_loading && std::chrono::duration<double>(now - inst->game_loading_since).count() >= kLoadingHoldSeconds;
-            const bool loading = ui_ok && (game_loading || (s.room_ok && !(follow || area)));
+            const bool loading = ui_ok && (game_loading || (s.room_ok && !follow));
             const bool title = ui_ok && !s.room_ok && !loading;
             if (s.room_ok) {
                 if (const int card = bc_cards::ForWorld(s.world_name); card >= 0)
@@ -1371,22 +1793,20 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             PublishI(h, "bc.ui.load", loading);
             const bool ingame = ui_ok && !loading && !title;
             PublishI(h, "bc.ui.ingame", ingame);
+            PublishMenu(inst, h, s, ui_ok && !loading && !title, follow);
             if (!ingame && ui_ok) {
                 // Pins are put on the map only: the symbols and the tap layer wait for it.
                 PublishI(h, "bc.pin.mode", 0);
             }
         }
         PublishI(h, "bc.map.follow", follow);
-        PublishI(h, "bc.map.area", area);
-        PublishI(h, "bc.map.ready", follow || area);
-        PublishI(h, "bc.map.loading", lm_state == 1 && !follow && !area);
+        PublishI(h, "bc.map.ready", follow);
+        PublishI(h, "bc.map.loading", lm_state == 1 && !follow);
         // One marker widget per zoom level (their sizes differ).
         PublishI(h, "bc.mk.show", marker);
         PublishI(h, "bc.mk.z0", marker && zoom == 0);
         PublishI(h, "bc.mk.z1", marker && zoom == 1);
         PublishI(h, "bc.mk.z2", marker && zoom == 2);
-        PublishI(h, "bc.mk.z3", marker && zoom == 3);
-        PublishI(h, "bc.mk.z4", marker && zoom == 4);
         PublishI(h, "bc.mk.dx", std::lround(mk_dx));
         PublishI(h, "bc.mk.dy", std::lround(mk_dy));
 
@@ -1410,141 +1830,105 @@ void Configure(void* p, const EdenDsmodHostExtensions* host) {
         if (host && host->struct_size >= sizeof(EdenDsmodHostExtensions)) {
             inst->astc = host->decode_astc;
             inst->astc_user = host->userdata;
+            // The guest helper's mailbox (only with the package's load plan applied).
+            inst->hx = *host;
+            inst->hx_ok = host->mailbox_address != 0 && host->mailbox_size >= 0x1000 && host->load_u32 &&
+                          host->store_u32 && host->load_u64 && host->store_u64;
         }
         inst->configured = true;
     }
     inst->codec_cv.notify_all();
 }
 
-/// Where the pins are kept: the emulator's own data folder, beside the runtime's persisted
-/// flags (on Android the app's private files folder, found from the process name; elsewhere the
-/// XDG data folder). Created when missing; "" when there is none.
-std::string PinStorePath() {
-    std::string base;
-#if defined(__ANDROID__)
-    if (std::FILE* f = std::fopen("/proc/self/cmdline", "rb")) {
-        char buf[256] = {};
-        const std::size_t n = std::fread(buf, 1, sizeof buf - 1, f);
-        std::fclose(f);
-        std::string pkg(buf, strnlen(buf, n));
-        if (const auto colon = pkg.find(':'); colon != std::string::npos)
-            pkg.resize(colon);
-        if (!pkg.empty() && pkg.find('/') == std::string::npos)
-            base = "/data/data/" + pkg + "/files";
+/// The marker guid of a pin symbol (the game's MapMarkerTypeID whose icon it is), "" if unknown.
+std::string PinGuid(Instance* inst, int type) {
+    std::shared_ptr<const bc_levelmap::Common> common;
+    {
+        std::lock_guard lock(inst->world_mutex);
+        common = inst->common;
     }
-#else
-    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
-        base = std::string(xdg) + "/eden";
-    else if (const char* home = std::getenv("HOME"); home && *home)
-        base = std::string(home) + "/.local/share/eden";
-#endif
-    if (base.empty())
+    if (!common || type < 0 || type >= kPinTypes)
         return {};
-    std::string dir = base;
-    for (const char* part : {"/dualscreen", "/persist", "/0100BA4026E94000"}) {
-        dir += part;
-        ::mkdir(dir.c_str(), 0700); // fails harmlessly when it exists
-    }
-    struct stat st {};
-    if (::stat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
-        return {};
-    return dir + "/" + kPinFile;
-}
-
-/// Reads the pins (one encoded pin per line). Under pin_mutex.
-void LoadPins(Instance* inst) {
-    inst->pin_store = PinStorePath();
-    if (inst->pin_store.empty()) {
-        inst->pin_store_status = "no folder";
-        return;
-    }
-    std::FILE* f = std::fopen(inst->pin_store.c_str(), "rb");
-    if (!f) {
-        inst->pin_store_status = "new";
-        return;
-    }
-    char line[64];
-    int i = 0;
-    while (i < kPinSlots && std::fgets(line, sizeof line, f)) {
-        const Pin p = DecodePin(std::strtoll(line, nullptr, 10));
-        if (p.biome >= 0)
-            inst->pins[static_cast<std::size_t>(i++)] = p;
-    }
-    std::fclose(f);
-    inst->pin_store_status = "read " + std::to_string(i);
-}
-
-/// Writes the pins (a new file renamed over the old one). Under pin_mutex.
-void SavePins(Instance* inst) {
-    if (inst->pin_store.empty())
-        return;
-    const std::string tmp = inst->pin_store + ".new";
-    std::FILE* f = std::fopen(tmp.c_str(), "wb");
-    if (!f) {
-        inst->pin_store_status = "cannot write";
-        return;
-    }
-    int n = 0;
-    for (const Pin& p : inst->pins) {
-        if (p.biome >= 0) {
-            std::fprintf(f, "%lld\n", static_cast<long long>(EncodePin(p)));
-            ++n;
-        }
-    }
-    const bool ok = std::fflush(f) == 0;
-    std::fclose(f);
-    if (!ok || std::rename(tmp.c_str(), inst->pin_store.c_str()) != 0) {
-        inst->pin_store_status = "cannot write";
-        return;
-    }
-    inst->pin_store_status = "saved " + std::to_string(n);
+    for (const auto& [guid, sprite] : common->marker_types)
+        if (sprite == kPinSprites[type])
+            return guid;
+    return {};
 }
 
 /// A tap on the map in pin mode: `packed` is the tap point on the canvas (x high, y low 32
-/// bits). Near a pin: a pin of another symbol takes the selected one, a pin of the same symbol
-/// goes away. Elsewhere: a new pin.
+/// bits). Near a marker of the game: another symbol changes it, the same symbol takes it away.
+/// Elsewhere: a new marker of the selected symbol. All through the game's own marker functions
+/// (the guest helper), so the game's map shows them and the game saves them.
 bool PinTap(Instance* inst, int64_t packed) {
     const double cx = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(packed) >> 32));
     const double cy = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(packed) & 0xFFFFFFFFu));
+    const auto& s = inst->live;
+    const std::string guid = PinGuid(inst, inst->pin_type);
     std::lock_guard lock(inst->pin_mutex);
-    if (!inst->pin_mode || !inst->tap_view_ok || inst->tap_biome < 0)
+    const auto lm = inst->tap_lm;
+    if (!inst->pin_mode || !inst->tap_view_ok || inst->tap_biome < 0 || !lm || guid.empty() || !s.markers_ok ||
+        !s.markers_comp || !s.level_ptr || lm->level_guid != s.level_guid || !inst->hx_ok)
+        return false;
+    const bc_live::MarkerType* type = nullptr;
+    for (const auto& t : s.marker_types)
+        if (t.guid == guid)
+            type = &t;
+    if (!type)
         return false;
     const auto& v = inst->tap_view;
     const double wx = v.x0 + cx / v.scale, wy = v.y1 - cy / v.scale;
-    // The pin icons are drawn centred on their point.
-    int best = -1;
+    const bc_live::MapMarker* best = nullptr;
     double best_d = kPinTouchPx;
-    for (int i = 0; i < kPinSlots; ++i) {
-        const Pin& p = inst->pins[static_cast<std::size_t>(i)];
-        if (p.biome != inst->tap_biome)
+    for (const auto& m : s.markers) {
+        if (m.level_guid != s.level_guid)
             continue;
         double px, py;
-        v.WorldToPixel(p.x, p.y, px, py);
+        v.WorldToPixel(m.x, m.y, px, py);
         const double d = std::hypot(px - cx, py - cy);
         if (d < best_d)
-            best_d = d, best = i;
+            best_d = d, best = &m;
     }
-    if (best >= 0) {
-        Pin& p = inst->pins[static_cast<std::size_t>(best)];
-        if (p.type != inst->pin_type)
-            p.type = inst->pin_type;
-        else
-            p = Pin{};
+    HelperRequest r;
+    r.target = s.markers_comp;
+    r.o1 = best && best->level_ptr ? best->level_ptr : s.level_ptr;
+    if (best) {
+        if (best->type_guid == guid) {
+            r.cmd = kCmdRemoveMarker;
+            r.i = best->id;
+        } else {
+            r.cmd = kCmdChangeMarker;
+            r.o2 = best->ptr;
+            r.o3 = type->type_obj;
+        }
     } else {
-        int slot = -1;
-        for (int i = 0; i < kPinSlots && slot < 0; ++i)
-            if (inst->pins[static_cast<std::size_t>(i)].biome < 0)
-                slot = i;
-        if (slot < 0)
-            return false; // full: the refused haptic says so
-        Pin& p = inst->pins[static_cast<std::size_t>(slot)];
-        p.biome = inst->tap_biome;
-        p.type = inst->pin_type;
-        p.x = static_cast<float>(wx);
-        p.y = static_cast<float>(wy);
+        // The game's own limit (MapMarkersComponent.markersCountLimit, counted its way).
+        if (s.markers_limit > 0) {
+            int count = 0;
+            for (const auto& m : s.markers) {
+                const bool same_type = m.type_guid == guid, same_map = m.level_guid == s.level_guid;
+                switch (s.markers_limit_mode) {
+                case 0: ++count; break;
+                case 1: count += same_type; break;
+                case 2: count += same_type && same_map; break;
+                default: count += same_map; break;
+                }
+            }
+            if (count >= s.markers_limit)
+                return false; // full: the refused haptic says so
+        }
+        int zone = lm->NavZoneAt(static_cast<float>(wx), static_cast<float>(wy));
+        int index = zone >= 0 ? lm->nav_zones[static_cast<std::size_t>(zone)].game_index : -1;
+        if (index < 0 && lm->main_zone >= 0)
+            index = lm->nav_zones[static_cast<std::size_t>(lm->main_zone)].game_index;
+        if (index < 0)
+            return false;
+        r.cmd = kCmdAddMarker;
+        r.o2 = type->guid_str;
+        r.x = static_cast<float>(wx);
+        r.y = static_cast<float>(wy);
+        r.i = index;
     }
-    ++inst->pins_rev;
-    SavePins(inst);
+    inst->hq.push_back(std::move(r));
     return true;
 }
 
@@ -1554,7 +1938,7 @@ EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
         return EDEN_DSMOD_FALSE;
     try {
         const std::string a = action;
-        // Close -> medium -> whole area -> close.
+        // Close -> near -> far -> close.
         const auto keep_bar = [inst] { inst->zoom_bar_since = std::chrono::steady_clock::now(); };
         if (a == "zoom") {
             inst->zoom = inst->zoom == 0 ? kZoomLevels - 1 : inst->zoom - 1;
@@ -1580,6 +1964,10 @@ EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
             inst->pin_type = static_cast<int>(std::clamp<int64_t>(argument, 0, kPinTypes - 1));
         } else if (a == "pin_tap") {
             return PinTap(inst, argument) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        } else if (a == "menu_tap") {
+            return MenuTap(inst, argument) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        } else if (a == "menu_back") {
+            inst->mv_view = 0, inst->mv_inspect.clear();
         } else {
             return EDEN_DSMOD_FALSE;
         }
@@ -1626,17 +2014,38 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
     } else if (std::sscanf(what.c_str(), "zbtn:%d", &zoom) == 1) {
         w = kZoomButtonW, h = kZoomButtonH;
         px = bc_ui::ZoomButton(*common, zoom, w, h);
-    } else if (what == "btn:debug" || what == "btn:map") {
+    } else if (what == "btn:debug" || what == "btn:map" || what == "btn:back") {
         w = kButtonW, h = kButtonH;
-        px = bc_ui::Button(*common, what == "btn:debug" ? "Debug" : "Map", w, h);
+        px = bc_ui::Button(*common, what == "btn:debug" ? "Debug" : what == "btn:map" ? "Map" : "Back", w, h);
+    } else if (unsigned long long cid = 0; std::sscanf(what.c_str(), "cell:%llx", &cid) == 1) {
+        std::optional<Cell> c;
+        {
+            std::lock_guard lock(inst->ex_mutex);
+            c = Instance::Lookup(inst->cells, static_cast<u64>(cid));
+        }
+        if (!c)
+            return false;
+        // A message line under the menu (the game's answer to a change).
+        w = kEqMsgW, h = kEqMsgH;
+        px = bc_ui::Label(*common, c->title, 28, w, h);
+    } else if (int tab_on = 0; std::sscanf(what.c_str(), "tab:eq:%d", &tab_on) == 1) {
+        w = kTabW, h = kTabH;
+        px = bc_ui::Button(*common, "Equipment", w, h, tab_on != 0);
+    } else if (what == "menunone" || what == "menuwait" || what == "menufail") {
+        w = kLabelW, h = kLabelH;
+        px = bc_ui::Label(*common,
+                          what == "menunone"   ? "Load a save to see your equipment"
+                          : what == "menuwait" ? "Reading the game's menu"
+                                               : "The game's menu could not be read",
+                          34, w, h);
     } else if (what == "btn:pin:0" || what == "btn:pin:1") {
         w = kButtonW, h = kButtonH;
         px = bc_ui::Button(*common, "Pin", w, h, what == "btn:pin:1");
-    } else if (int t = 0, sel = 0; std::sscanf(what.c_str(), "pin:%d:%d", &t, &sel) == 2) {
+    } else if (int t = 0, pin_on = 0; std::sscanf(what.c_str(), "pin:%d:%d", &t, &pin_on) == 2) {
         if (t < 0 || t >= kPinTypes)
             return false;
         w = h = kPinCell;
-        px = bc_ui::IconCell(*common, kPinSprites[t], sel != 0, w, h);
+        px = bc_ui::IconCell(*common, kPinSprites[t], pin_on != 0, w, h);
     } else if (what == "wait") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common, "Waiting for the game", 40, w, h);
@@ -1721,7 +2130,7 @@ bool LoadTitle(Instance* inst, u64 id, void* receiver, EdenDsmodImageSink sink) 
 /// prefabs (ui-gamemenus) draw their icon under a "DisplayParent" scaled 5x, the death icon
 /// raised by 0.25 inside it.
 std::vector<bc_mapdraw::ExtraIcon> MapExtras(const bc_levelmap::LevelMap& lm, const bc_levelmap::Common& c,
-                                             const bc_mapdraw::Exploration& ex, const std::vector<Pin>& pins) {
+                                             const bc_mapdraw::Exploration& ex) {
     constexpr float kItemScale = 5.0f, kDeathRaise = 0.25f;
     std::vector<bc_mapdraw::ExtraIcon> out;
     const auto add = [&](const std::string& sprite, float x, float y) {
@@ -1742,11 +2151,6 @@ std::vector<bc_mapdraw::ExtraIcon> MapExtras(const bc_levelmap::LevelMap& lm, co
             continue;
         if (const auto t = c.marker_types.find(m.type_guid); t != c.marker_types.end())
             add(t->second, m.x, m.y);
-    }
-    // The page's own pins, over the game's markers.
-    for (const Pin& p : pins) {
-        if (p.biome == lm.number && p.type >= 0 && p.type < kPinTypes)
-            add(kPinSprites[p.type], p.x, p.y);
     }
     return out;
 }
@@ -1811,27 +2215,18 @@ bool LoadLevelMapImage(Instance* inst, int number, int zoom, int cx, int cy, u64
     const auto reveal = bc_mapdraw::BuildReveal(*lm, *ex);
     bc_mapdraw::RenderOptions opt;
     opt.threads = kRenderThreads;
-    if (common) {
-        const auto pins = PinSnapshot(inst, pins_rev);
-        opt.extra = MapExtras(*lm, *common, *ex, *pins);
-    }
+    (void)pins_rev; // in the key only: a changed marker set redraws the window
+    if (common)
+        opt.extra = MapExtras(*lm, *common, *ex);
     std::vector<u8> px;
     int w, h;
     // Blurred (pause screen): the same view drawn kBlurDiv times smaller and softened; the page
     // stretches it back over the sharp one.
     const int div = blur ? kBlurDiv : 1;
-    if (zoom == 0) {
-        w = kCanvasW / div;
-        h = kCanvasH / div;
-        opt.min_icon_px = 22.0f / static_cast<float>(div);
-        auto v = bc_mapdraw::FitZone(*lm, cx, kCanvasW, kCanvasH);
-        v.scale /= div;
-        v.w = w, v.h = h;
-        px = bc_mapdraw::Render(*lm, *reveal, v, opt);
-    } else {
+    {
         w = kWindowW / div;
         h = kWindowH / div;
-        const double scale = kZoomScale[std::clamp(zoom, 1, kZoomLevels - 1)];
+        const double scale = kZoomScale[std::clamp(zoom, 0, kZoomLevels - 1)];
         px = bc_mapdraw::Render(*lm, *reveal, bc_mapdraw::CenteredView(cx, cy, scale / div, w, h), opt);
     }
     if (blur)
@@ -1871,12 +2266,12 @@ bool LoadLegacyImage(Instance* inst, int number, int zoom, int cx, int cy, u64 e
         fog = empty;
     }
     bc_render::Params prm;
-    prm.zoom = std::clamp(zoom, 0, bc_render::kZoomLevels - 1);
+    prm.zoom = zoom <= 0 ? 1 : 2; // the 0.2 renderer: 1 medium, 2 close
     // Window centre: world units -> biome tiles.
     prm.center_x = cx - static_cast<double>(biome->min_cx) * biome->chunk_w;
     prm.center_y = cy - static_cast<double>(biome->min_cy) * biome->chunk_h;
-    prm.out_w = prm.zoom == 0 ? kCanvasW : kWindowW;
-    prm.out_h = prm.zoom == 0 ? kCanvasH : kWindowH;
+    prm.out_w = kWindowW;
+    prm.out_h = kWindowH;
     const auto pixels = bc_render::Render(*biome, *fog, prm);
     sink(receiver, static_cast<u32>(prm.out_w), static_cast<u32>(prm.out_h), pixels.data(), pixels.size());
     return true;
@@ -1897,6 +2292,8 @@ EdenDsmodBool LoadImage(void* p, const EdenDsmodHostApi*, const char* key, void*
         unsigned long long id = 0;
         if (std::strncmp(key, "module:bc:ui:", 13) == 0)
             return LoadUi(inst, key + 13, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        if (std::sscanf(key, "module:bc:menu:%llx", &id) == 1)
+            return LoadMenu(inst, static_cast<u64>(id), receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         if (std::sscanf(key, "module:bc:title:%llx", &id) == 1)
             return LoadTitle(inst, id, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         int number = 0, zoom = 0, cx = 0, cy = 0;

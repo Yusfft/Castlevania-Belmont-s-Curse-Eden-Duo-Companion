@@ -7,6 +7,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <mutex>
+#include <thread>
 
 namespace bc_ui {
 
@@ -35,8 +38,7 @@ const float* Lut() {
 }
 
 /// Bilinear texel fetch, premultiplied linear. (x, y) in texels, y down from the sprite's top.
-Vec4 Fetch(const Sprite& s, float x, float y) {
-    const auto& t = s.tex;
+Vec4 Fetch(const bc_levelmap::Texture& t, float x, float y) {
     const int w = static_cast<int>(t.w), h = static_cast<int>(t.h);
     const float fx = x - 0.5f, fy = (static_cast<float>(h) - y) - 0.5f; // stored rows run bottom-up
     const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
@@ -88,16 +90,82 @@ Vec4 Lin(const Vec4& srgb) {
 
 } // namespace
 
+namespace {
+
+/// Half the size: each texel the alpha-weighted mean of four.
+bc_levelmap::Texture Half(const bc_levelmap::Texture& t) {
+    bc_levelmap::Texture o;
+    o.w = std::max<std::uint32_t>(1, (t.w + 1) / 2);
+    o.h = std::max<std::uint32_t>(1, (t.h + 1) / 2);
+    o.slices = 1;
+    o.srgb = t.srgb;
+    o.repeat = t.repeat;
+    o.rgba.resize(static_cast<std::size_t>(o.w) * o.h * 4);
+    for (std::uint32_t y = 0; y < o.h; ++y) {
+        for (std::uint32_t x = 0; x < o.w; ++x) {
+            unsigned sum[4] = {0, 0, 0, 0}, wa = 0;
+            for (std::uint32_t k = 0; k < 4; ++k) {
+                const std::uint32_t xx = std::min(t.w - 1, 2 * x + (k & 1)), yy = std::min(t.h - 1, 2 * y + (k >> 1));
+                const std::uint8_t* p = &t.rgba[(static_cast<std::size_t>(yy) * t.w + xx) * 4];
+                sum[0] += p[0] * p[3], sum[1] += p[1] * p[3], sum[2] += p[2] * p[3], sum[3] += p[3];
+                wa += p[3];
+            }
+            std::uint8_t* q = &o.rgba[(static_cast<std::size_t>(y) * o.w + x) * 4];
+            for (int c = 0; c < 3; ++c)
+                q[c] = static_cast<std::uint8_t>(wa ? (sum[c] + wa / 2) / wa : 0);
+            q[3] = static_cast<std::uint8_t>((sum[3] + 2) / 4);
+        }
+    }
+    return o;
+}
+
+std::mutex g_mips;
+
+/// The sprite's mip chain (built once).
+std::shared_ptr<const std::vector<bc_levelmap::Texture>> Mips(const Sprite& s) {
+    std::lock_guard lock(g_mips);
+    if (!s.mips) {
+        auto v = std::make_shared<std::vector<bc_levelmap::Texture>>();
+        const bc_levelmap::Texture* cur = &s.tex;
+        while ((cur->w > 8 || cur->h > 8) && v->size() < 8) {
+            v->push_back(Half(*cur));
+            cur = &v->back();
+        }
+        s.mips = std::move(v);
+    }
+    return s.mips;
+}
+
+} // namespace
+
 Canvas::Canvas(int w, int h) : w_(std::max(w, 1)), h_(std::max(h, 1)), px_(static_cast<std::size_t>(w_) * h_ * 4, 0.0f) {}
 
 void Canvas::Over(int x, int y, float r, float g, float b, float a) {
     if (x < 0 || y < 0 || x >= w_ || y >= h_ || a <= 0)
         return;
-    float* p = &px_[(static_cast<std::size_t>(y) * w_ + x) * 4];
+    const std::size_t i = static_cast<std::size_t>(y) * w_ + x;
+    if (clip_) {
+        const float k = clip_->At(x, y);
+        if (k <= 0)
+            return;
+        r *= k, g *= k, b *= k, a *= k;
+    }
+    float* p = &px_[i * 4];
     p[0] = r + p[0] * (1 - a);
     p[1] = g + p[1] * (1 - a);
     p[2] = b + p[2] * (1 - a);
     p[3] = a + p[3] * (1 - a);
+}
+
+std::vector<float> Canvas::Alpha() const {
+    std::vector<float> out(static_cast<std::size_t>(w_) * h_);
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = px_[i * 4 + 3];
+    return out;
+}
+
+void Canvas::Clear() {
+    std::fill(px_.begin(), px_.end(), 0.0f);
 }
 
 void Canvas::Paint(int x, int y, const Vec4& srgb, float a) {
@@ -111,31 +179,73 @@ void Canvas::Blit(const Sprite& s, float sx, float sy, float sw, float sh, float
         return;
     const int x0 = std::max(0, static_cast<int>(std::floor(dx))), x1 = std::min(w_, static_cast<int>(std::ceil(dx + dw)));
     const int y0 = std::max(0, static_cast<int>(std::floor(dy))), y1 = std::min(h_, static_cast<int>(std::ceil(dy + dh)));
-    const float kx = sw / dw, ky = sh / dh;
-    const int ss = std::clamp(static_cast<int>(std::ceil(std::max(kx, ky))), 1, 4);
-    const Vec4 tl = Lin(tint);
-    for (int y = y0; y < y1; ++y) {
-        for (int x = x0; x < x1; ++x) {
-            Vec4 acc{};
-            int n = 0;
-            for (int j = 0; j < ss; ++j) {
-                for (int i = 0; i < ss; ++i) {
-                    const float px = static_cast<float>(x) + (static_cast<float>(i) + 0.5f) / static_cast<float>(ss);
-                    const float py = static_cast<float>(y) + (static_cast<float>(j) + 0.5f) / static_cast<float>(ss);
-                    if (px < dx || px >= dx + dw || py < dy || py >= dy + dh)
-                        continue;
-                    const Vec4 c = Fetch(s, sx + (px - dx) * kx, sy + (py - dy) * ky);
-                    acc.x += c.x, acc.y += c.y, acc.z += c.z, acc.w += c.w;
-                    ++n;
-                }
-            }
-            if (n == 0)
-                continue;
-            const float inv = 1.0f / static_cast<float>(ss * ss); // partial pixels at the rect edge stay partial
-            Over(x, y, acc.x * inv * tl.x * tl.w, acc.y * inv * tl.y * tl.w, acc.z * inv * tl.z * tl.w,
-                 acc.w * inv * tl.w);
+    float kx = sw / dw, ky = sh / dh;
+    // Much smaller than its texels: from a halved copy, so a few samples per pixel do.
+    const bc_levelmap::Texture* tex = &s.tex;
+    std::shared_ptr<const std::vector<bc_levelmap::Texture>> mips;
+    if (std::min(kx, ky) >= 1.5f && s.tex.slices <= 1) {
+        mips = Mips(s);
+        int level = 0;
+        while (level < static_cast<int>(mips->size()) && std::min(kx, ky) >= 1.5f) {
+            const auto& m = (*mips)[static_cast<std::size_t>(level)];
+            const float fx = static_cast<float>(m.w) / static_cast<float>(tex->w);
+            const float fy = static_cast<float>(m.h) / static_cast<float>(tex->h);
+            sx *= fx, sw *= fx, kx *= fx;
+            sy *= fy, sh *= fy, ky *= fy;
+            tex = &m;
+            ++level;
         }
     }
+    // After the halving under 1.5 texels per pixel: one bilinear sample does, unless one axis
+    // is still squeezed much more than the other. Pixels the rect only partly covers get that
+    // much coverage.
+    const int ss = std::max(kx, ky) > 2.0f ? 2 : 1;
+    const Vec4 tl = Lin(tint);
+    const float k_r = tl.x * tl.w, k_g = tl.y * tl.w, k_b = tl.z * tl.w, k_a = tl.w;
+    const float rx0 = dx, rx1 = dx + dw, ry0 = dy, ry1 = dy + dh;
+    const auto rows = [&](int ya, int yb) {
+        for (int y = ya; y < yb; ++y) {
+            const float cy0 = std::max(static_cast<float>(y), ry0), cy1 = std::min(static_cast<float>(y + 1), ry1);
+            if (cy1 <= cy0)
+                continue;
+            for (int x = x0; x < x1; ++x) {
+                const float cx0 = std::max(static_cast<float>(x), rx0), cx1 = std::min(static_cast<float>(x + 1), rx1);
+                if (cx1 <= cx0)
+                    continue;
+                Vec4 acc{};
+                for (int j = 0; j < ss; ++j) {
+                    const float py = cy0 + (cy1 - cy0) * (static_cast<float>(j) + 0.5f) / static_cast<float>(ss);
+                    for (int i = 0; i < ss; ++i) {
+                        const float px = cx0 + (cx1 - cx0) * (static_cast<float>(i) + 0.5f) / static_cast<float>(ss);
+                        const Vec4 c = Fetch(*tex, sx + (px - dx) * kx, sy + (py - dy) * ky);
+                        acc.x += c.x, acc.y += c.y, acc.z += c.z, acc.w += c.w;
+                    }
+                }
+                const float cov = (cx1 - cx0) * (cy1 - cy0) / static_cast<float>(ss * ss);
+                if (acc.w * cov <= 0.0f)
+                    continue;
+                Over(x, y, acc.x * cov * k_r, acc.y * cov * k_g, acc.z * cov * k_b, acc.w * cov * k_a);
+            }
+        }
+    };
+    // Large rects (the menu's full-screen layers) are shared out by rows.
+    const long work = static_cast<long>(x1 - x0) * (y1 - y0) * ss * ss;
+    const unsigned hw = std::thread::hardware_concurrency();
+    const int threads = work > 120000 && hw > 1 ? static_cast<int>(std::min(4u, hw)) : 1;
+    if (threads <= 1 || y1 - y0 < threads * 8) {
+        rows(y0, y1);
+        return;
+    }
+    std::vector<std::thread> pool;
+    const int step = (y1 - y0 + threads - 1) / threads;
+    for (int t = 1; t < threads; ++t) {
+        const int a0 = y0 + t * step, a1 = std::min(y1, a0 + step);
+        if (a0 < a1)
+            pool.emplace_back(rows, a0, a1);
+    }
+    rows(y0, std::min(y1, y0 + step));
+    for (auto& th : pool)
+        th.join();
 }
 
 void Canvas::Blit(const Sprite& s, float dx, float dy, float dw, float dh, const Vec4& tint) {
@@ -308,7 +418,7 @@ std::vector<std::uint8_t> TitleBanner(const bc_levelmap::Common& c, const std::s
     return cv.Encode();
 }
 
-const char* const kZoomNames[] = {"Area", "Far", "Mid", "Near", "Close"};
+const char* const kZoomNames[] = {"Far", "Near", "Close"};
 
 std::vector<std::uint8_t> ZoomBar(const bc_levelmap::Common& c, int zoom, int w, int h) {
     using L = ZoomBarLayout;
@@ -369,6 +479,32 @@ std::vector<std::uint8_t> Button(const bc_levelmap::Common& c, const std::string
     const float tw = Canvas::TextWidth(c.font, text, size);
     cv.Text(c.font, text, (static_cast<float>(w) - tw) / 2, 0.66f * static_cast<float>(h), size,
             active ? kGold : kCream);
+    return cv.Encode();
+}
+
+std::vector<std::uint8_t> ItemCell(const bc_levelmap::Common& c, const std::string& title, const std::string& sub,
+                                   bool equipped, bool selected, int w, int h) {
+    Canvas cv(w, h);
+    const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+    // A dark inside so the text reads over the page.
+    for (int y = 6; y < h - 6; ++y)
+        for (int x = 6; x < w - 6; ++x)
+            cv.Darken(x, y, 0.70f);
+    if (const Sprite* f = Ui(c, "cartouche"))
+        cv.Nine(*f, 17, 17, 17, 17, 0, 0, fw, fh, 1.0f, false,
+                selected ? Vec4{1.35f, 1.15f, 0.70f, 1.0f} : Vec4{0.62f, 0.58f, 0.62f, 1.0f});
+    const float pad = 0.28f * fh;
+    const float room = fw - 2 * pad;
+    float big = 0.36f * fh;
+    big = std::min(big, big * room / std::max(1.0f, Canvas::TextWidth(c.font, title, big)));
+    const Vec4 name_col = equipped ? kGold : kCream;
+    if (sub.empty()) {
+        cv.Text(c.font, title, pad, 0.5f * fh + 0.35f * big, big, name_col);
+    } else {
+        const float small = 0.24f * fh;
+        cv.Text(c.font, title, pad, 0.50f * fh, big, name_col);
+        cv.Text(c.font, sub, pad, 0.50f * fh + 1.25f * small, small, Vec4{0.70f, 0.66f, 0.60f, 1});
+    }
     return cv.Encode();
 }
 
