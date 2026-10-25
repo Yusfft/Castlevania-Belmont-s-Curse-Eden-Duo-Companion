@@ -20,6 +20,7 @@
 // stays drawn underneath until the new one arrives, so there is no blank frame.
 
 #include <algorithm>
+#include <random>
 #include <cstdlib>
 #include <sys/stat.h>
 #include <array>
@@ -47,6 +48,7 @@
 #include "bc_levelmap.h"
 #include "bc_live.h"
 #include "bc_mapdraw.h"
+#include "bc_facts.h"
 #include "bc_menupage.h"
 #include "bc_render.h"
 #include "bc_ui.h"
@@ -60,7 +62,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.8.0";
+constexpr const char* kVersion = "0.9.0";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -86,19 +88,29 @@ constexpr int kPinCell = 84;
 // game): three of its marker symbols are offered. A tap this close to a marker touches it.
 constexpr const char* kPinSprites[] = {"Map_MarkerSet_Cross", "Map_MarkerSet_Chest", "Map_MarkerSet_Eye"};
 constexpr int kPinTypes = 3;
-constexpr double kPinTouchPx = 40.0;
+// After the symbols, the eraser: a tap on a marker with it takes the marker away.
+constexpr int kPinEraser = kPinTypes;
+constexpr int kPinTools = kPinTypes + 1;
+constexpr double kPinTouchPx = 40.0, kPinEraserPx = 64.0;
+// Dragging the map moves the view off the player; it glides back after kPanIdleSeconds without
+// a drag (or at once with the player button).
+constexpr double kPanIdleSeconds = 8.0;
+constexpr double kPanHomePx = 24.0; // panned this far (canvas px): the player button shows
 // The player marker: the game draws Map_PlayerIcon 5 units tall (the page sizes it per zoom
 // level), 0.7 units above the player.
 constexpr double kPlayerLift = 0.7;
 // Map drawing runs beside the emulator: few threads, low priority, and a new window at most
 // every kRedrawSeconds for exploration changes alone.
 constexpr int kRenderThreads = 2;
-// Position glitches: a jump of more than kJumpUnits from the last position is taken only once
-// it holds for kJumpSamples samples in a row (a real teleport shows ~0.1 s later; a one-off bad
-// value never shows). A missing or implausible position keeps the last good one for
-// kHoldSeconds. A change of world must also hold kWorldSamples samples.
-constexpr double kJumpUnits = 12.0;
-constexpr int kJumpSamples = 6;
+// Position glitches: a move further than the player can go since the last good position
+// (kJumpUnits plus kMaxSpeed units a second) is taken only once the new place has held, moving
+// no faster than that, for kJumpHoldSeconds and kJumpSamples samples (a real teleport shows a
+// moment later; a stray value never shows). A missing or implausible position keeps the last
+// good one for kHoldSeconds. A change of world must also hold kWorldSamples samples.
+constexpr double kJumpUnits = 3.0;
+constexpr double kMaxSpeed = 45.0;
+constexpr double kJumpHoldSeconds = 0.3;
+constexpr int kJumpSamples = 4;
 constexpr double kHoldSeconds = 3.0;
 constexpr int kWorldSamples = 10;
 // Game over: shown kGameOverSeconds after the player dies, its glow running through
@@ -111,10 +123,14 @@ constexpr int kGameOverW = 760, kGameOverH = 420;
 constexpr int kPausedW = 600, kPausedH = 200;
 constexpr int kPromptW = 700, kPromptH = 70;
 constexpr int kVersionW = 460, kVersionH = 50;
+constexpr double kTitleFallbackSeconds = 45.0; // title page without the title screen recognised
 // The loading page: the biome's card, and "Loading, be patient" with 1-2-3 dots under it (a new
 // dot every kLoadingDotMs). The game's loading state shows it once it has held
 // kLoadingHoldSeconds, so a quick room change does not flash it.
 constexpr int kLoadingW = 900, kLoadingH = 80;
+// A Castlevania fact under the biome's card while loading (bc_facts.h), once the game's menu
+// (whose art and info box it is drawn with) is read.
+constexpr int kFactW = 1180, kFactH = 430;
 constexpr int kLoadingDotMs = 420;
 constexpr double kLoadingHoldSeconds = 0.4;
 // The pause screen's blurred map: the window drawn this many times smaller, stretched back.
@@ -408,7 +424,12 @@ struct Instance {
     u64 explore_id = 1; // never a real id: the first sample builds the snapshot
     std::shared_ptr<const bc_mapdraw::Exploration> exploration;
     std::shared_ptr<const bc_render::Fog> fog;
-    Window cur, prev;
+    // `cur` is the window wanted, `shown` the newest one whose picture has been drawn (the page
+    // shows it until `cur` is ready: the host would otherwise draw the old picture at the new
+    // window's place for a moment), `prev` the one under it.
+    Window cur, prev, shown;
+    std::deque<Window> asked; // the last windows wanted, oldest first
+    std::deque<std::string> map_ready; // map keys drawn (ex_mutex)
     std::string last_world;
     double last_wx = 0, last_wy = 0;
     // Glitch filter (tick thread).
@@ -418,7 +439,12 @@ struct Instance {
     std::string pos_world;
     double pos_x = 0, pos_y = 0, cand_x = 0, cand_y = 0;
     int cand_n = 0;
-    std::chrono::steady_clock::time_point pos_time{};
+    std::chrono::steady_clock::time_point pos_time{}, cand_since{}, cand_time{};
+    // The view dragged off the player (world units), when last dragged, in which world.
+    double pan_wx = 0, pan_wy = 0;
+    std::chrono::steady_clock::time_point pan_at{};
+    std::string pan_world;
+    int pan_biome = -1;
     u64 glitches = 0;
     // Game over and pause (tick thread).
     bool died_known = false, prev_died = false;
@@ -427,8 +453,17 @@ struct Instance {
     std::string blur_key;
     // Loading page (tick thread).
     bool game_loading = false;
+    // Title page: the game's title screen seen since the last time in game; when the module
+    // started (or the game was last in a room).
+    bool title_seen = false;
+    std::chrono::steady_clock::time_point boot_since = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point game_loading_since{};
     int loading_card = -1;
+    // The fact on the loading page: a new one each time the page comes up, in a shuffled order.
+    bool load_shown = false;
+    int fact = -1;
+    std::vector<int> fact_order;
+    std::size_t fact_next = 0;
     // Debug and inventory texts, rebuilt when the slower reads run (once a second) and
     // published from the cache in between.
     std::vector<std::pair<std::string, std::string>> slow_texts;
@@ -962,13 +997,14 @@ void PublishPins(Instance* inst, const EdenDsmodHostApi* h) {
     PublishI(h, "bc.pin.mode", inst->pin_mode ? 1 : 0);
     PublishI(h, "bc.pin.plain", inst->pin_mode ? 0 : 1);
     char key[48];
-    for (int t = 0; t < kPinTypes; ++t) {
+    for (int t = 0; t < kPinTools; ++t) {
         std::snprintf(key, sizeof key, "module:bc:ui:pin:%d:%d", t, t == inst->pin_type ? 1 : 0);
         char name[24];
         std::snprintf(name, sizeof name, "bc.pin.k%d", t);
         PublishT(h, name, key);
     }
     PublishT(h, "bc.pin.btn", inst->pin_mode ? "module:bc:ui:btn:pin:1" : "module:bc:ui:btn:pin:0");
+    PublishT(h, "bc.pin.hint", inst->pin_type == kPinEraser ? "module:bc:ui:pinhint:1" : "module:bc:ui:pinhint:0");
     PublishI(h, "bc.pin.n", static_cast<s64>(inst->live.markers.size()));
 }
 
@@ -1203,10 +1239,20 @@ std::string MenuItemName(Instance* inst, const std::string& id) {
 
 /// Equips an owned item through the game (the helper): a weapon, an arcana, or a relic into
 /// relic slot `slot` (a relic worn in another slot moves there).
+/// The game changes equipment only from its pause menu: a weapon swapped while the player acts
+/// (its attachment rebuilt between the game's systems) can leave the attack button dead. The
+/// page does the same: changes wait for the game to be paused.
+bool EquipAllowed(Instance* inst) {
+    if (inst->live.paused)
+        return true;
+    EquipMessage(inst, "Pause the game to change equipment");
+    return false;
+}
+
 bool MenuEquip(Instance* inst, const std::string& id, int slot) {
     const auto& s = inst->live;
     const auto& inv = s.inv;
-    if (!inv.ok || !inv.inventory || !inst->hx_ok)
+    if (!inv.ok || !inv.inventory || !inst->hx_ok || !EquipAllowed(inst))
         return false;
     const bc_live::Item* item = nullptr;
     for (const auto& it : inv.items)
@@ -1257,7 +1303,7 @@ bool MenuEquip(Instance* inst, const std::string& id, int slot) {
 bool MenuUnequipRelic(Instance* inst, int slot) {
     const auto& inv = inst->live.inv;
     if (!inv.ok || !inv.inventory || !inst->hx_ok || slot < 0 || slot >= static_cast<int>(inv.charms.size()) ||
-        !inv.charms[static_cast<std::size_t>(slot)].ptr)
+        !inv.charms[static_cast<std::size_t>(slot)].ptr || !EquipAllowed(inst))
         return false;
     HelperRequest u;
     u.cmd = kCmdUnequipCharm;
@@ -1288,6 +1334,20 @@ bool MenuTap(Instance* inst, int64_t packed) {
             hit = &t;
             break;
         }
+    if (!hit) {
+        // A finger just beside a small slot: the nearest slot within reach (the screen is small).
+        constexpr float kReach = 36.0f;
+        float best = kReach;
+        for (const auto& t : *targets) {
+            if (t.kind == bc_menupage::Target::Close || t.kind == bc_menupage::Target::Tab)
+                continue;
+            const float dx = std::max({t.x - cx, 0.0f, cx - (t.x + t.w)});
+            const float dy = std::max({t.y - cy, 0.0f, cy - (t.y + t.h)});
+            const float d = std::hypot(dx, dy);
+            if (d < best)
+                best = d, hit = &t;
+        }
+    }
     if (!hit)
         return false;
     using T = bc_menupage::Target;
@@ -1341,6 +1401,23 @@ bool MenuTap(Instance* inst, int64_t packed) {
         return true;
     }
     return false;
+}
+
+bool LoadFact(Instance* inst, int index, void* receiver, EdenDsmodImageSink sink) {
+    if (inst->menu_state != 2 || index < 0 || index >= bc_facts::kCount)
+        return false;
+    const auto& f = bc_facts::kFacts[index];
+    std::vector<u8> px;
+    {
+        std::lock_guard lock(inst->menu_mutex);
+        if (!inst->menu)
+            return false;
+        px = inst->menu->RenderFact(f.title, f.text, f.art, f.item, kFactW, kFactH);
+    }
+    if (px.size() != static_cast<std::size_t>(kFactW) * kFactH * 4)
+        return false;
+    sink(receiver, kFactW, kFactH, px.data(), px.size());
+    return true;
 }
 
 bool LoadMenu(Instance* inst, u64 id, void* receiver, EdenDsmodImageSink sink) {
@@ -1527,17 +1604,27 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         }
         {
             const auto now = std::chrono::steady_clock::now();
+            const auto reach = [](std::chrono::steady_clock::time_point since,
+                                  std::chrono::steady_clock::time_point at) {
+                const double dt = std::clamp(std::chrono::duration<double>(at - since).count(), 0.0, 1.0);
+                return kJumpUnits + kMaxSpeed * dt;
+            };
             if (pos_mode == 1) {
                 bool take = true;
                 if (inst->pos_ok && inst->pos_world == s.world_name &&
-                    std::hypot(pwx - inst->pos_x, pwy - inst->pos_y) > kJumpUnits) {
-                    // A jump: wait until the new place holds.
-                    if (inst->cand_n > 0 && std::hypot(pwx - inst->cand_x, pwy - inst->cand_y) < 3.0)
+                    std::hypot(pwx - inst->pos_x, pwy - inst->pos_y) > reach(inst->pos_time, now)) {
+                    // A jump: wait until the new place holds (moving as the player can).
+                    if (inst->cand_n > 0 &&
+                        std::hypot(pwx - inst->cand_x, pwy - inst->cand_y) <= reach(inst->cand_time, now)) {
                         ++inst->cand_n;
-                    else
+                    } else {
                         inst->cand_n = 1;
+                        inst->cand_since = now;
+                    }
                     inst->cand_x = pwx, inst->cand_y = pwy;
-                    take = inst->cand_n >= kJumpSamples;
+                    inst->cand_time = now;
+                    take = inst->cand_n >= kJumpSamples &&
+                           std::chrono::duration<double>(now - inst->cand_since).count() >= kJumpHoldSeconds;
                     if (!take) {
                         pwx = inst->pos_x, pwy = inst->pos_y;
                         ++inst->glitches;
@@ -1621,16 +1708,39 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
 
         bool follow = false, marker = false;
         double mk_dx = 0, mk_dy = 0;
+        int marker_zoom = std::clamp(inst->zoom, 0, kZoomLevels - 1);
+        bool panned = false;
+        std::string top_key; // the window picture on the page
+        bool top_legacy = false;
         const int zoom = std::clamp(inst->zoom, 0, kZoomLevels - 1);
         if ((lm || legacy) && number >= 0) {
             if (pos_mode) {
                 follow = true;
                 const double scale = kZoomScale[zoom];
+                const auto now = std::chrono::steady_clock::now();
+                // Where the view looks: the player, or where the map was dragged to.
+                if (inst->pan_world != s.world_name || inst->pan_biome != number || !lm) {
+                    inst->pan_wx = inst->pan_wy = 0;
+                    inst->pan_world = s.world_name;
+                    inst->pan_biome = number;
+                }
+                if (std::chrono::duration<double>(now - inst->pan_at).count() > kPanIdleSeconds) {
+                    // Gliding back to the player.
+                    inst->pan_wx *= 0.82, inst->pan_wy *= 0.82;
+                    if (std::hypot(inst->pan_wx, inst->pan_wy) * scale < 1.0)
+                        inst->pan_wx = inst->pan_wy = 0;
+                }
+                double fx = pwx + inst->pan_wx, fy = pwy + inst->pan_wy;
+                if (lm) {
+                    fx = std::clamp(fx, std::min<double>(lm->x0, pwx), std::max<double>(lm->x1, pwx));
+                    fy = std::clamp(fy, std::min<double>(lm->y0, pwy), std::max<double>(lm->y1, pwy));
+                    inst->pan_wx = fx - pwx, inst->pan_wy = fy - pwy;
+                }
+                panned = std::hypot(inst->pan_wx, inst->pan_wy) * scale > kPanHomePx;
                 Window& cur = inst->cur;
                 const bool same_view = cur.valid && cur.biome == number && cur.zoom == zoom && cur.legacy == !lm;
-                const bool far = same_view && (std::fabs(pwx - cur.cx) * scale > kRecentreX ||
-                                               std::fabs(pwy - cur.cy) * scale > kRecentreY);
-                const auto now = std::chrono::steady_clock::now();
+                const bool far = same_view && (std::fabs(fx - cur.cx) * scale > kRecentreX ||
+                                               std::fabs(fy - cur.cy) * scale > kRecentreY);
                 const bool redraw_due =
                     cur.explore != inst->explore_id &&
                     std::chrono::duration<double>(now - inst->last_window).count() >= kRedrawSeconds;
@@ -1643,59 +1753,101 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 const bool pins_changed = same_view && lm && cur.pins != pins_rev;
                 if (!same_view || far || redraw_due || pins_changed) {
                     inst->last_window = now;
-                    // Keep the old window underneath while the new one loads.
-                    inst->prev = same_view ? cur : Window{};
                     cur.valid = true;
                     cur.legacy = !lm;
                     cur.biome = number;
                     cur.zoom = zoom;
                     if (!same_view || far) {
-                        cur.cx = static_cast<int>(std::lround(pwx));
-                        cur.cy = static_cast<int>(std::lround(pwy));
+                        cur.cx = static_cast<int>(std::lround(fx));
+                        cur.cy = static_cast<int>(std::lround(fy));
                     }
                     cur.explore = inst->explore_id;
                     cur.pins = pins_rev;
                     cur.key = MapKey(cur);
+                    inst->asked.push_back(cur);
+                    while (inst->asked.size() > 6)
+                        inst->asked.pop_front();
                 }
+                // The window on the page: the wanted one once its picture is drawn, until then
+                // the last drawn one (at its own place and scale). The wanted one waits under it
+                // (the host draws a picture only once it is asked for it).
+                // (While the view is dragged a newer window may be wanted before the last one is
+                // drawn: the newest drawn one is shown.)
+                {
+                    std::lock_guard lock(inst->ex_mutex);
+                    for (auto it = inst->asked.rbegin(); it != inst->asked.rend(); ++it) {
+                        if (it->biome != number || it->zoom != zoom || it->legacy != !lm)
+                            continue;
+                        if (std::find(inst->map_ready.begin(), inst->map_ready.end(), it->key) ==
+                            inst->map_ready.end())
+                            continue;
+                        if (it->key != inst->shown.key) {
+                            inst->prev = inst->shown;
+                            inst->shown = *it;
+                        }
+                        break;
+                    }
+                }
+                const bool shown_ok = inst->shown.valid && inst->shown.biome == number && inst->shown.legacy == !lm;
+                const Window& top = shown_ok ? inst->shown : cur;
+                // Canvas offset of a window so the view centre (fx, fy) is mid-screen.
                 const auto offset = [&](const Window& w, double& ox, double& oy) {
-                    const auto v = bc_mapdraw::CenteredView(w.cx, w.cy, scale, kWindowW, kWindowH);
+                    const double ws = kZoomScale[std::clamp(w.zoom, 0, kZoomLevels - 1)];
+                    const auto v = bc_mapdraw::CenteredView(w.cx, w.cy, ws, kWindowW, kWindowH);
                     double px, py;
-                    v.WorldToPixel(pwx, pwy, px, py);
+                    v.WorldToPixel(fx, fy, px, py);
                     ox = kCanvasW / 2.0 - px;
                     oy = kCanvasH / 2.0 - py;
                 };
                 double ox, oy;
-                offset(cur, ox, oy);
+                offset(top, ox, oy);
+                const double top_scale = kZoomScale[std::clamp(top.zoom, 0, kZoomLevels - 1)];
                 {
                     // Canvas pixel -> world, as the window is shown (rounded offsets).
-                    const auto v = bc_mapdraw::CenteredView(cur.cx, cur.cy, scale, kWindowW, kWindowH);
+                    const auto v = bc_mapdraw::CenteredView(top.cx, top.cy, top_scale, kWindowW, kWindowH);
                     std::lock_guard lock(inst->pin_mutex);
                     inst->tap_view = v;
-                    inst->tap_view.x0 = v.x0 - static_cast<double>(std::lround(ox)) / scale;
-                    inst->tap_view.y1 = v.y1 + static_cast<double>(std::lround(oy)) / scale;
+                    inst->tap_view.x0 = v.x0 - static_cast<double>(std::lround(ox)) / top_scale;
+                    inst->tap_view.y1 = v.y1 + static_cast<double>(std::lround(oy)) / top_scale;
                     inst->tap_view.w = kCanvasW, inst->tap_view.h = kCanvasH;
-                    inst->tap_view_ok = !cur.legacy;
+                    inst->tap_view_ok = !top.legacy && top.zoom == zoom;
                     inst->tap_biome = number;
                     inst->tap_lm = lm;
                 }
-                PublishT(h, "bc.map.key", cur.key);
+                top_key = top.key, top_legacy = top.legacy;
+                PublishT(h, "bc.map.key", top.key);
                 PublishI(h, "bc.map.ox", std::lround(ox));
                 PublishI(h, "bc.map.oy", std::lround(oy));
-                const bool prev_ok = inst->prev.valid && inst->prev.biome == number && inst->prev.zoom == zoom;
-                if (prev_ok) {
+                // The one before under it (drawn, at its own place: it fills the edges while the
+                // view moves), and the wanted one asked for in a corner pixel under the frame.
+                const Window* under = nullptr;
+                if (inst->prev.valid && inst->prev.biome == number && inst->prev.zoom == top.zoom &&
+                    inst->prev.legacy == top.legacy && inst->prev.key != top.key)
+                    under = &inst->prev;
+                PublishI(h, "bc.map.show", shown_ok);
+                PublishT(h, "bc.map.req", cur.key);
+                PublishI(h, "bc.map.reqshow", cur.key != top.key);
+                if (under) {
                     double pox, poy;
-                    offset(inst->prev, pox, poy);
-                    PublishT(h, "bc.map.pkey", inst->prev.key);
+                    offset(*under, pox, poy);
+                    PublishT(h, "bc.map.pkey", under->key);
                     PublishI(h, "bc.map.pox", std::lround(pox));
                     PublishI(h, "bc.map.poy", std::lround(poy));
                 }
-                PublishI(h, "bc.map.pshow", prev_ok);
+                PublishI(h, "bc.map.pshow", under != nullptr);
+                // The player marker, where the player is on the window shown.
                 marker = true;
-                mk_dy = -kPlayerLift * scale;
+                marker_zoom = std::clamp(top.zoom, 0, kZoomLevels - 1);
+                mk_dx = (pwx - fx) * top_scale;
+                mk_dy = -(pwy - fy) * top_scale - kPlayerLift * top_scale;
             }
-        } else {
-            PublishI(h, "bc.map.pshow", 0);
         }
+        if (!follow) {
+            PublishI(h, "bc.map.pshow", 0);
+            PublishI(h, "bc.map.show", 0);
+            PublishI(h, "bc.map.reqshow", 0);
+        }
+        PublishI(h, "bc.pan.home", follow && panned);
         if (!follow) {
             std::lock_guard lock(inst->pin_mutex);
             inst->tap_view_ok = false;
@@ -1736,8 +1888,8 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             PublishI(h, "bc.go.show", game_over);
             // Pause: the map blurred under "Paused" while a menu or the pause screen is open.
             const bool paused = s.paused && !game_over && follow;
-            if (follow && inst->cur.valid && !inst->cur.legacy && inst->cur.key.rfind("module:bc:", 0) == 0)
-                inst->blur_key = "module:bc:blur:" + inst->cur.key.substr(10);
+            if (follow && !top_legacy && top_key.rfind("module:bc:", 0) == 0)
+                inst->blur_key = "module:bc:blur:" + top_key.substr(10);
             PublishT(h, "bc.map.bkey", inst->blur_key);
             PublishI(h, "bc.paused", paused);
             PublishI(h, "bc.paused.f", paused && follow && !inst->blur_key.empty());
@@ -1774,16 +1926,43 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             const bool game_loading =
                 s.gs_loading && std::chrono::duration<double>(now - inst->game_loading_since).count() >= kLoadingHoldSeconds;
             const bool loading = ui_ok && (game_loading || (s.room_ok && !follow));
-            const bool title = ui_ok && !s.room_ok && !loading;
+            // The title page waits for the game's title screen: the main menu pushes the menu
+            // game state (it pauses the game and takes UI input) while no room is loaded. Seen
+            // once, the page stays until a save is in game; before it (logos, intro) it is
+            // black. If the state is never recognised the page shows after kTitleFallbackSeconds.
+            if (s.room_ok)
+                inst->title_seen = false, inst->boot_since = now;
+            else if (s.gs_ok && s.gs_pause && s.gs_ui)
+                inst->title_seen = true;
+            const bool title_fallback =
+                std::chrono::duration<double>(now - inst->boot_since).count() >= kTitleFallbackSeconds;
+            const bool title = ui_ok && !s.room_ok && !loading && (inst->title_seen || title_fallback);
+            const bool boot = ui_ok && !s.room_ok && !loading && !title;
             if (s.room_ok) {
                 if (const int card = bc_cards::ForWorld(s.world_name); card >= 0)
                     inst->loading_card = card;
             }
             const int load_card = inst->loading_card >= 0 ? inst->loading_card : inst->title_card;
+            // The game's menu is read early (title or loading page): the facts are drawn with it.
+            if ((title || loading) && ui_ok && inst->menu_state == 0)
+                inst->StartMenu();
+            if (loading && !inst->load_shown) {
+                if (inst->fact_order.empty() || inst->fact_next >= inst->fact_order.size()) {
+                    inst->fact_order.resize(bc_facts::kCount);
+                    for (int i = 0; i < bc_facts::kCount; ++i)
+                        inst->fact_order[static_cast<std::size_t>(i)] = i;
+                    std::mt19937 rng(static_cast<u32>(now.time_since_epoch().count()));
+                    std::shuffle(inst->fact_order.begin(), inst->fact_order.end(), rng);
+                    inst->fact_next = 0;
+                }
+                inst->fact = inst->fact_order[inst->fact_next++];
+            }
+            inst->load_shown = loading;
+            const bool fact = loading && inst->fact >= 0 && inst->menu_state == 2;
             char key[48];
             std::snprintf(key, sizeof key, "module:bc:ui:menuart:%d", inst->title_card);
             PublishT(h, "bc.ui.art", ui_ok ? key : "");
-            std::snprintf(key, sizeof key, "module:bc:ui:loadart:%d", load_card);
+            std::snprintf(key, sizeof key, fact ? "module:bc:ui:loadartf:%d" : "module:bc:ui:loadart:%d", load_card);
             PublishT(h, "bc.ui.lart", ui_ok ? key : "");
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
             std::snprintf(key, sizeof key, "module:bc:ui:loadtxt:%d", static_cast<int>(ms / kLoadingDotMs % 3) + 1);
@@ -1791,9 +1970,18 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
             PublishI(h, "bc.ui.title", title);
             PublishI(h, "bc.ui.wait", title); // 0.5 manifests
             PublishI(h, "bc.ui.load", loading);
-            const bool ingame = ui_ok && !loading && !title;
+            PublishI(h, "bc.ui.fact", fact);
+            PublishI(h, "bc.ui.load0", loading && !fact); // the loading line under the big card
+            PublishI(h, "bc.ui.load1", loading && fact);  // ... at the bottom, under the fact
+            std::snprintf(key, sizeof key, "module:bc:fact:%d", std::max(inst->fact, 0));
+            PublishT(h, "bc.ui.factkey", key);
+            const bool ingame = ui_ok && !loading && !title && !boot;
             PublishI(h, "bc.ui.ingame", ingame);
-            PublishMenu(inst, h, s, ui_ok && !loading && !title, follow);
+            PublishI(h, "bc.ui.boot", boot);
+            // The frame's ember glow breathes on two beats (the host fades each picture).
+            PublishI(h, "bc.ui.glow0", ingame && (ms / 1700) % 2 == 0);
+            PublishI(h, "bc.ui.glow1", ingame && (ms / 1100) % 3 == 0);
+            PublishMenu(inst, h, s, ingame, follow);
             if (!ingame && ui_ok) {
                 // Pins are put on the map only: the symbols and the tap layer wait for it.
                 PublishI(h, "bc.pin.mode", 0);
@@ -1804,9 +1992,9 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         PublishI(h, "bc.map.loading", lm_state == 1 && !follow);
         // One marker widget per zoom level (their sizes differ).
         PublishI(h, "bc.mk.show", marker);
-        PublishI(h, "bc.mk.z0", marker && zoom == 0);
-        PublishI(h, "bc.mk.z1", marker && zoom == 1);
-        PublishI(h, "bc.mk.z2", marker && zoom == 2);
+        PublishI(h, "bc.mk.z0", marker && marker_zoom == 0);
+        PublishI(h, "bc.mk.z1", marker && marker_zoom == 1);
+        PublishI(h, "bc.mk.z2", marker && marker_zoom == 2);
         PublishI(h, "bc.mk.dx", std::lround(mk_dx));
         PublishI(h, "bc.mk.dy", std::lround(mk_dy));
 
@@ -1863,22 +2051,28 @@ bool PinTap(Instance* inst, int64_t packed) {
     const double cx = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(packed) >> 32));
     const double cy = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(packed) & 0xFFFFFFFFu));
     const auto& s = inst->live;
-    const std::string guid = PinGuid(inst, inst->pin_type);
+    int tool;
+    {
+        std::lock_guard lock(inst->pin_mutex);
+        tool = inst->pin_type;
+    }
+    const bool eraser = tool == kPinEraser;
+    const std::string guid = eraser ? std::string() : PinGuid(inst, tool);
     std::lock_guard lock(inst->pin_mutex);
     const auto lm = inst->tap_lm;
-    if (!inst->pin_mode || !inst->tap_view_ok || inst->tap_biome < 0 || !lm || guid.empty() || !s.markers_ok ||
-        !s.markers_comp || !s.level_ptr || lm->level_guid != s.level_guid || !inst->hx_ok)
+    if (!inst->pin_mode || !inst->tap_view_ok || inst->tap_biome < 0 || !lm || (guid.empty() && !eraser) ||
+        !s.markers_ok || !s.markers_comp || !s.level_ptr || lm->level_guid != s.level_guid || !inst->hx_ok)
         return false;
     const bc_live::MarkerType* type = nullptr;
     for (const auto& t : s.marker_types)
         if (t.guid == guid)
             type = &t;
-    if (!type)
+    if (!type && !eraser)
         return false;
     const auto& v = inst->tap_view;
     const double wx = v.x0 + cx / v.scale, wy = v.y1 - cy / v.scale;
     const bc_live::MapMarker* best = nullptr;
-    double best_d = kPinTouchPx;
+    double best_d = eraser ? kPinEraserPx : kPinTouchPx;
     for (const auto& m : s.markers) {
         if (m.level_guid != s.level_guid)
             continue;
@@ -1888,11 +2082,13 @@ bool PinTap(Instance* inst, int64_t packed) {
         if (d < best_d)
             best_d = d, best = &m;
     }
+    if (eraser && !best)
+        return false; // no marker there: the refused haptic says so
     HelperRequest r;
     r.target = s.markers_comp;
     r.o1 = best && best->level_ptr ? best->level_ptr : s.level_ptr;
     if (best) {
-        if (best->type_guid == guid) {
+        if (eraser || best->type_guid == guid) {
             r.cmd = kCmdRemoveMarker;
             r.i = best->id;
         } else {
@@ -1961,7 +2157,17 @@ EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
             inst->pin_mode = !inst->pin_mode;
         } else if (a == "pin_type") {
             std::lock_guard lock(inst->pin_mutex);
-            inst->pin_type = static_cast<int>(std::clamp<int64_t>(argument, 0, kPinTypes - 1));
+            inst->pin_type = static_cast<int>(std::clamp<int64_t>(argument, 0, kPinTools - 1));
+        } else if (a == "map_pan") {
+            // A drag on the map (dx high, dy low 32 bits, canvas px): the map follows the finger.
+            const double dx = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(argument) >> 32));
+            const double dy = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(argument) & 0xFFFFFFFFu));
+            const double scale = kZoomScale[std::clamp(inst->zoom, 0, kZoomLevels - 1)];
+            inst->pan_wx -= dx / scale;
+            inst->pan_wy += dy / scale;
+            inst->pan_at = std::chrono::steady_clock::now();
+        } else if (a == "map_home") {
+            inst->pan_wx = inst->pan_wy = 0;
         } else if (a == "pin_tap") {
             return PinTap(inst, argument) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         } else if (a == "menu_tap") {
@@ -2008,6 +2214,9 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
     if (what == "frame") {
         w = kCanvasW, h = kCanvasH;
         px = bc_ui::Frame(*common, w, h);
+    } else if (int g = 0; std::sscanf(what.c_str(), "glow:%d", &g) == 1) {
+        w = kCanvasW, h = kCanvasH;
+        px = bc_ui::FrameGlow(*common, w, h, g == 0 ? 0.7f : 0.45f);
     } else if (std::sscanf(what.c_str(), "zoom:%d", &zoom) == 1) {
         w = kZoomBarW, h = kZoomBarH;
         px = bc_ui::ZoomBar(*common, zoom, w, h);
@@ -2042,10 +2251,15 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
         w = kButtonW, h = kButtonH;
         px = bc_ui::Button(*common, "Pin", w, h, what == "btn:pin:1");
     } else if (int t = 0, pin_on = 0; std::sscanf(what.c_str(), "pin:%d:%d", &t, &pin_on) == 2) {
-        if (t < 0 || t >= kPinTypes)
+        if (t < 0 || t >= kPinTools)
             return false;
         w = h = kPinCell;
-        px = bc_ui::IconCell(*common, kPinSprites[t], pin_on != 0, w, h);
+        // The eraser: a cross drawn in the cell (no sprite).
+        px = bc_ui::IconCell(*common, t == kPinEraser ? "" : kPinSprites[t], pin_on != 0, w, h);
+    } else if (what == "home") {
+        // Back to the player (shown while the map is dragged off).
+        w = h = kPinCell;
+        px = bc_ui::IconCell(*common, "Map_PlayerIcon", false, w, h);
     } else if (what == "wait") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common, "Waiting for the game", 40, w, h);
@@ -2053,10 +2267,11 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
         w = kGameOverW, h = kGameOverH;
         px = bc_ui::GameOver(*common, kGameOverGlow[std::clamp(f, 0, kGameOverFrames - 1)], w, h);
     } else if (int card = -1; what == "menuart" || std::sscanf(what.c_str(), "menuart:%d", &card) == 1 ||
-                                std::sscanf(what.c_str(), "loadart:%d", &card) == 1) {
+                                std::sscanf(what.c_str(), "loadart:%d", &card) == 1 ||
+                                std::sscanf(what.c_str(), "loadartf:%d", &card) == 1) {
         // A page of the game's painted cards: the title page (big card) or the loading page
-        // (the card higher up, the loading line under it).
-        const bool load = what.rfind("loadart:", 0) == 0;
+        // (the card higher up, the loading line under it; smaller with a fact under it).
+        const bool load = what.rfind("loadart:", 0) == 0, load_fact = what.rfind("loadartf:", 0) == 0;
         if (card < 0)
             card = inst->title_card;
         std::shared_ptr<bc_levelmap::Assets> assets;
@@ -2080,7 +2295,9 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
             return false;
         }
         w = kCanvasW, h = kCanvasH;
-        px = load ? bc_ui::MenuArt(*sprite, w, h, 0.68f, 0.07f) : bc_ui::MenuArt(*sprite, w, h);
+        px = load_fact ? bc_ui::MenuArt(*sprite, w, h, 0.44f, 0.035f)
+             : load    ? bc_ui::MenuArt(*sprite, w, h, 0.68f, 0.07f)
+                       : bc_ui::MenuArt(*sprite, w, h);
         if (px.empty())
             return false;
     } else if (int dots = 0; std::sscanf(what.c_str(), "loadtxt:%d", &dots) == 1) {
@@ -2095,9 +2312,10 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
     } else if (what == "version") {
         w = kVersionW, h = kVersionH;
         px = bc_ui::Label(*common, std::string("Dual Screen Mod ") + kVersion, 26, w, h, 1, {0.62f, 0.58f, 0.52f, 1});
-    } else if (what == "pinhint") {
+    } else if (what == "pinhint" || what == "pinhint:0" || what == "pinhint:1") {
         w = kLabelW, h = kLabelH;
-        px = bc_ui::Label(*common, "Tap the map to place a pin", 34, w, h);
+        px = bc_ui::Label(*common, what == "pinhint:1" ? "Tap a pin to remove it" : "Tap the map to place a pin", 34,
+                          w, h);
     } else if (what == "debug") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common, "Debug", 48, w, h);
@@ -2292,6 +2510,8 @@ EdenDsmodBool LoadImage(void* p, const EdenDsmodHostApi*, const char* key, void*
         unsigned long long id = 0;
         if (std::strncmp(key, "module:bc:ui:", 13) == 0)
             return LoadUi(inst, key + 13, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        if (int fact = -1; std::sscanf(key, "module:bc:fact:%d", &fact) == 1)
+            return LoadFact(inst, fact, receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         if (std::sscanf(key, "module:bc:menu:%llx", &id) == 1)
             return LoadMenu(inst, static_cast<u64>(id), receiver, sink) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         if (std::sscanf(key, "module:bc:title:%llx", &id) == 1)
@@ -2301,12 +2521,20 @@ EdenDsmodBool LoadImage(void* p, const EdenDsmodHostApi*, const char* key, void*
         if (std::sscanf(key, "module:bc:blur:lm:4:%d:%d:%d:%d:%llx:%llx", &number, &zoom, &cx, &cy, &id, &pins) == 6)
             return LoadLevelMapImage(inst, number, zoom, cx, cy, id, pins, receiver, sink, true) ? EDEN_DSMOD_TRUE
                                                                                                : EDEN_DSMOD_FALSE;
+        // A map window drawn: the page may show it now (see Window).
+        const auto drawn = [inst, key](bool ok) {
+            if (ok) {
+                std::lock_guard lock(inst->ex_mutex);
+                inst->map_ready.emplace_back(key);
+                while (inst->map_ready.size() > 8)
+                    inst->map_ready.pop_front();
+            }
+            return ok ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        };
         if (std::sscanf(key, "module:bc:lm:4:%d:%d:%d:%d:%llx:%llx", &number, &zoom, &cx, &cy, &id, &pins) == 6)
-            return LoadLevelMapImage(inst, number, zoom, cx, cy, id, pins, receiver, sink) ? EDEN_DSMOD_TRUE
-                                                                                         : EDEN_DSMOD_FALSE;
+            return drawn(LoadLevelMapImage(inst, number, zoom, cx, cy, id, pins, receiver, sink));
         if (std::sscanf(key, "module:bc:map:2:%d:%d:%d:%d:%llx", &number, &zoom, &cx, &cy, &id) == 5)
-            return LoadLegacyImage(inst, number, zoom, cx, cy, id, receiver, sink) ? EDEN_DSMOD_TRUE
-                                                                                 : EDEN_DSMOD_FALSE;
+            return drawn(LoadLegacyImage(inst, number, zoom, cx, cy, id, receiver, sink));
         return EDEN_DSMOD_FALSE;
     } catch (...) {
         return EDEN_DSMOD_FALSE;

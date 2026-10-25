@@ -67,6 +67,9 @@ private:
 
 /// The map screen's frame around a w x h page (transparent inside).
 std::vector<std::uint8_t> Frame(const bc_levelmap::Common& c, int w, int h);
+/// An ember glow over the frame's gold (straight sRGB RGBA, mostly transparent); `strength`
+/// scales it.
+std::vector<std::uint8_t> FrameGlow(const bc_levelmap::Common& c, int w, int h, float strength);
 /// The level banner with the level and district names. `color` is the level's banner colour.
 std::vector<std::uint8_t> TitleBanner(const bc_levelmap::Common& c, const std::string& title,
                                       const std::string& subtitle, const bc_shade::Vec4& color, int w, int h);

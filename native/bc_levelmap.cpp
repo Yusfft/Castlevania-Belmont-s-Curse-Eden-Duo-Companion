@@ -4,6 +4,7 @@
 #include "bc_levelmap.h"
 
 #include <algorithm>
+#include <map>
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -1033,6 +1034,7 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
         }
         const Value* rooms = v ? v->Get("worldRoomStates") : nullptr;
         std::size_t shapes = 0;
+        std::map<std::string, int> other; // shape classes not read
         for (const auto& room : rooms ? rooms->list : std::vector<Value>{}) {
             const Value* zs = room.Get("zoneStates");
             for (const auto& z : zs ? zs->list : std::vector<Value>{}) {
@@ -1067,14 +1069,24 @@ std::shared_ptr<const LevelMap> LoadLevelMapImpl(Assets& assets, const Codecs& c
                             }
                             zone.shapes.push_back(bc_fog::MakeQuad(q));
                         }
+                    } else {
+                        ++other[cls];
                     }
                 }
                 shapes += zone.shapes.size();
                 lm->zones.push_back(std::move(zone));
             }
         }
+        std::string unread;
+        int culled = 0;
+        for (const auto& z : lm->zones)
+            culled += z.culled;
+        if (culled)
+            unread += " culled zones x" + std::to_string(culled);
+        for (const auto& [c, n] : other)
+            unread += " " + c + " x" + std::to_string(n);
         Log(log, std::to_string(lm->zones.size()) + " zones, " + std::to_string(shapes) + " shapes" +
-                     (truncated ? " (truncated)" : ""));
+                     (truncated ? " (truncated)" : "") + (unread.empty() ? "" : "," + unread));
     } else {
         Log(log, "no fog-of-war holder");
     }

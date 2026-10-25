@@ -88,6 +88,12 @@ public:
     /// Draws `s` at w x h. `targets` receives the tappable parts.
     std::vector<std::uint8_t> Render(const Snapshot& s, int w, int h, std::vector<Target>* targets);
 
+    /// A fact card for the loading page: `title` and `text` in the game's equipment info box,
+    /// beside an item's art as the equipment page frames it (`art`: 0 none, 1 arcana card,
+    /// 2 weapon card, 3 relic slot; `item` its id).
+    std::vector<std::uint8_t> RenderFact(const std::string& title, const std::string& text, int art,
+                                         const std::string& item, int w, int h);
+
     /// An item's display name ("" when unknown).
     std::string Name(const std::string& id) const;
     const ItemInfo* Info(const std::string& id) const;
@@ -110,6 +116,10 @@ private:
     static bc_menu::SpriteP Goldleaf(const bc_menu::SpriteP& in);
     void Display(bc_menu::Scene& sc, const bc_menu::Comp* display, const ItemInfo* it, const Snapshot& s);
     void Bind(bc_menu::Scene& sc, const Snapshot& s);
+    /// The page's parts for a page narrower than the game's screen: the view's panels of the
+    /// 16:9 layout (`sc`, ch units tall) rearranged and scaled so their text reads.
+    std::vector<bc_menu::Part> Compose(bc_menu::Scene& sc, const Snapshot& s, int w, int h, float ch,
+                                       const std::vector<bool>& hide);
     std::string Str(std::int64_t key) const;
     std::string Str(std::int64_t key, const ItemInfo* it) const;
 

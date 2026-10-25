@@ -351,6 +351,8 @@ std::vector<std::uint8_t> Canvas::Encode() const {
 
 namespace {
 const Sprite* Ui(const bc_levelmap::Common& c, const char* name) {
+    if (std::strcmp(name, "Map_PlayerIcon") == 0)
+        return c.player.tex.Empty() ? nullptr : &c.player;
     const auto it = c.ui.find(name);
     return it == c.ui.end() || it->second.tex.Empty() ? nullptr : &it->second;
 }
@@ -378,6 +380,77 @@ std::vector<std::uint8_t> Frame(const bc_levelmap::Common& c, int w, int h) {
                 {0.16f, 0.14f, 0.17f, 1.0f});
     }
     return cv.Encode();
+}
+
+std::vector<std::uint8_t> FrameGlow(const bc_levelmap::Common& c, int w, int h, float strength) {
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4, 0);
+    const Sprite* bg = Ui(c, "Map_Background");
+    if (!bg)
+        return out;
+    // Where the frame's gold is (the border drawn at full brightness), at a quarter size.
+    Canvas m(w, h);
+    m.Nine(*bg, 48, 48, 48, 48, 0, 0, static_cast<float>(w), static_cast<float>(h), 0.8f, false, {1, 1, 1, 1});
+    const auto px = m.Encode();
+    const int qw = (w + 3) / 4, qh = (h + 3) / 4;
+    std::vector<float> q(static_cast<std::size_t>(qw) * qh, 0.0f);
+    std::vector<float> gold_px(static_cast<std::size_t>(w) * h, 0.0f);
+    // The brightest parts of the border (its gold), relative to the border's own range.
+    float top = 0;
+    for (std::size_t i = 0; i + 3 < px.size(); i += 4)
+        top = std::max(top, (0.3f * px[i] + 0.6f * px[i + 1] + 0.1f * px[i + 2]) * px[i + 3] / (255.0f * 255.0f));
+    if (top <= 0.01f)
+        return out;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const std::uint8_t* p = &px[(static_cast<std::size_t>(y) * w + x) * 4];
+            const float lum = (0.3f * p[0] + 0.6f * p[1] + 0.1f * p[2]) * p[3] / (255.0f * 255.0f) / top;
+            const float gold = std::clamp((lum - 0.35f) / 0.4f, 0.0f, 1.0f);
+            const std::size_t qi = static_cast<std::size_t>(y / 4) * qw + x / 4;
+            q[qi] += gold / 16.0f;
+            gold_px[static_cast<std::size_t>(y) * w + x] = gold;
+        }
+    }
+    // A soft halo: three box blurs.
+    std::vector<float> tmp(q.size());
+    for (int pass = 0; pass < 3; ++pass) {
+        constexpr int r = 3;
+        for (int y = 0; y < qh; ++y)
+            for (int x = 0; x < qw; ++x) {
+                float a = 0;
+                for (int k = -r; k <= r; ++k)
+                    a += q[static_cast<std::size_t>(y) * qw + std::clamp(x + k, 0, qw - 1)];
+                tmp[static_cast<std::size_t>(y) * qw + x] = a / (2 * r + 1);
+            }
+        for (int y = 0; y < qh; ++y)
+            for (int x = 0; x < qw; ++x) {
+                float a = 0;
+                for (int k = -r; k <= r; ++k)
+                    a += tmp[static_cast<std::size_t>(std::clamp(y + k, 0, qh - 1)) * qw + x];
+                q[static_cast<std::size_t>(y) * qw + x] = a / (2 * r + 1);
+            }
+    }
+    // Ember colours: deep orange in the halo, brighter where the gold itself is.
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float fx = (static_cast<float>(x) + 0.5f) / 4.0f - 0.5f, fy = (static_cast<float>(y) + 0.5f) / 4.0f - 0.5f;
+            const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, qw - 1), y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, qh - 1);
+            const int x1 = std::min(x0 + 1, qw - 1), y1 = std::min(y0 + 1, qh - 1);
+            const float ax = std::clamp(fx - static_cast<float>(x0), 0.0f, 1.0f), ay = std::clamp(fy - static_cast<float>(y0), 0.0f, 1.0f);
+            const auto Q = [&](int xx, int yy) { return q[static_cast<std::size_t>(yy) * qw + xx]; };
+            const float halo = (Q(x0, y0) * (1 - ax) + Q(x1, y0) * ax) * (1 - ay) + (Q(x0, y1) * (1 - ax) + Q(x1, y1) * ax) * ay;
+            const float core = gold_px[static_cast<std::size_t>(y) * w + x];
+            const float a = std::clamp(strength * (3.2f * halo + 0.6f * core), 0.0f, 0.85f);
+            if (a <= 0.004f)
+                continue;
+            const float hot = std::clamp(core * 0.8f, 0.0f, 1.0f);
+            std::uint8_t* o = &out[(static_cast<std::size_t>(y) * w + x) * 4];
+            o[0] = 255;
+            o[1] = static_cast<std::uint8_t>(110 + 90 * hot);
+            o[2] = static_cast<std::uint8_t>(30 + 50 * hot);
+            o[3] = static_cast<std::uint8_t>(std::lround(a * 255.0f));
+        }
+    }
+    return out;
 }
 
 std::vector<std::uint8_t> TitleBanner(const bc_levelmap::Common& c, const std::string& title,
@@ -528,7 +601,22 @@ std::vector<std::uint8_t> IconCell(const bc_levelmap::Common& c, const std::stri
             }
         }
     }
-    if (const Sprite* s = Ui(c, sprite.c_str())) {
+    if (sprite.empty()) {
+        // The pin eraser: a crimson "no" sign (ring and slash), brighter when selected.
+        const float r = 0.25f * std::min(fw, fh), th = 0.045f * std::min(fw, fh);
+        const Vec4 col = selected ? Vec4{0.93f, 0.30f, 0.22f, 1.0f} : Vec4{0.62f, 0.26f, 0.22f, 1.0f};
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const float dx = static_cast<float>(x) + 0.5f - fw / 2, dy = static_cast<float>(y) + 0.5f - fh / 2;
+                const float rr = std::hypot(dx, dy);
+                const float ring = std::fabs(rr - r);
+                const float slash = rr <= r ? std::fabs(dx - dy) * 0.70710678f : 1e9f;
+                const float a = std::clamp(th + 0.5f - std::min(ring, slash), 0.0f, 1.0f);
+                if (a > 0)
+                    cv.Paint(x, y, col, a);
+            }
+        }
+    } else if (const Sprite* s = Ui(c, sprite.c_str())) {
         const float box = 0.66f * std::min(fw, fh);
         const float tw = static_cast<float>(s->tex.w), th = static_cast<float>(s->tex.h);
         const float k = box / std::max(tw, th);

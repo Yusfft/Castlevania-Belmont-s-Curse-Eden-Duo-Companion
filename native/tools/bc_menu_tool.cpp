@@ -8,10 +8,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
 
+#include "bc_facts.h"
 #include "bc_levelmap.h"
 #include "bc_menu.h"
 #include "bc_menupage.h"
@@ -111,6 +113,17 @@ int main(int argc, char** argv) {
     std::printf("after trim rss %ld MB\n", Rss());
     if (!ok)
         return 1;
+    if (std::getenv("BC_FACTS")) {
+        // The loading page's fact cards.
+        for (int i = 0; i < bc_facts::kCount; ++i) {
+            const auto& f = bc_facts::kFacts[i];
+            const auto t1 = ms();
+            const auto px = menu.RenderFact(f.title, f.text, f.art, f.item, 1180, 430);
+            std::printf("fact %d: %.0f ms %s\n", i, ms() - t1, px.empty() ? "EMPTY" : "");
+            Save(out + "_fact" + std::to_string(i) + ".ppm", px, 1180, 430);
+        }
+        return 0;
+    }
     // A made-up player.
     bc_menupage::Snapshot s;
     s.ok = true;

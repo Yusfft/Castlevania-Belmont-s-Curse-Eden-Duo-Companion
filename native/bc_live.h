@@ -169,6 +169,7 @@ struct State {
     bool ctx_ok = false, ctx_paused = false;
     bool gs_ok = false, gs_pause = false, gs_pause_playtime = false;
     std::string gs_maps; // the active state's action maps, comma separated
+    bool gs_ui = false;  // ... one of them is "UI"
     /// GameStateManager.loadingState is the active state (a scene is loading).
     bool gs_loading = false;
     /// A menu or pause screen is open: the game is paused and the state takes UI input.
@@ -209,6 +210,7 @@ private:
     std::unordered_map<std::uint64_t, std::string> type_names_;
     /// The pause state (context flag and the active game state).
     void ReadPause(const Memory& mem, State& out);
+    void ReadGameState(const Memory& mem, State& out);
     std::uint64_t death_comp_ = 0; // DeathResultComponent found by ReadPlayerComponents
     /// Marker types from UIManager (kept once found: they are loaded assets).
     void ReadMarkerTypes(const Memory& mem, State& out);

@@ -174,6 +174,8 @@ struct Png {
 };
 void Sink(void* receiver, std::uint32_t w, std::uint32_t h, const std::uint8_t* px, std::size_t size) {
     auto* out = static_cast<Png*>(receiver);
+    if (out->path.empty())
+        return; // drawn, not kept (the host asking for the next map window)
     std::FILE* f = std::fopen(out->path.c_str(), "wb");
     if (!f) {
         std::fprintf(stderr, "cannot write %s\n", out->path.c_str());
@@ -347,15 +349,15 @@ int main(int argc, char** argv) {
         }
     }
     const auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < 600; ++i) {
+    for (int i = 0; i < 1500; ++i) {
         sim.ints.clear();
         sim.texts.clear();
         api->sample(inst, &host);
         helper.Frame(sim.guest);
         api->tick(inst, &host);
-        if (sim.ints["bc.world.ready"] && i > 40)
+        if (sim.ints["bc.world.ready"] && sim.ints["bc.lm.state"] >= 2 && i > 40)
             break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     std::printf("after %.0f ms:\n",
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
@@ -364,12 +366,26 @@ int main(int argc, char** argv) {
     for (const auto& [k, v] : sim.texts)
         std::printf("  %-18s '%s'\n", k.c_str(), v.substr(0, k == "bc.world.log" ? 4000 : 120).c_str());
 
+    // Like the host: the next map window the page asks for is drawn (then the page shows it).
+    int windows_drawn = 0;
     const auto sample_n = [&](int n) {
         for (int i = 0; i < n; ++i) {
             sim.ints.clear();
             sim.texts.clear();
             api->sample(inst, &host);
             helper.Frame(sim.guest);
+            if (sim.ints["bc.map.reqshow"] && !sim.texts["bc.map.req"].empty()) {
+                Png none;
+                ext->load_image(inst, &host, sim.texts["bc.map.req"].c_str(), &none, Sink);
+                ++windows_drawn;
+            }
+        }
+    };
+    // Samples at about the game's pace (a jump in position is taken once it has held 0.3 s).
+    const auto sample_paced = [&](int n) {
+        for (int i = 0; i < n; ++i) {
+            sample_n(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
     };
     const auto save = [&](const std::string& key, const std::string& name) {
@@ -413,10 +429,10 @@ int main(int argc, char** argv) {
         std::printf("glitch: before %s during %s after %s glitches %lld\n", before.c_str(), during.c_str(), mk().c_str(),
                     static_cast<long long>(sim.ints["bc.pos.glitch"]));
         sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -60.0f);
-        sample_n(10);
-        std::printf("teleport held 10 samples: %s key %s\n", mk().c_str(), sim.texts["bc.map.key"].c_str());
+        sample_paced(30);
+        std::printf("teleport held 0.5 s: %s key %s\n", mk().c_str(), sim.texts["bc.map.key"].c_str());
         sim.guest.Put<float>(sim.guest.explorer_ + 0x90, -94.0f);
-        sample_n(10);
+        sample_paced(30);
     }
     ext->on_action(inst, "zoom", 0); // close -> near
     sample_n(2);
@@ -432,6 +448,8 @@ int main(int argc, char** argv) {
                 static_cast<long long>(sim.ints["bc.title.img"]));
     save(sim.texts["bc.title.key"], "sim_title");
     save("module:bc:player:70", "sim_player70");
+    save("module:bc:ui:glow:0", "sim_ui_glow0");
+    save("module:bc:ui:glow:1", "sim_ui_glow1");
     for (const char* k : {"frame", "zoom:0", "zoom:2", "btn:debug", "btn:map", "wait", "debug", "menuart", "prompt", "version"})
         save(std::string("module:bc:ui:") + k, std::string("sim_ui_") + (k[0] == 'z' ? "zoom" + std::string(k + 5) : k[0] == 'b' ? std::string(k + 4) : std::string(k)));
     std::printf("zoom_set 1 accepted: %u\n", ext->on_action(inst, "zoom_set", 1));
@@ -491,36 +509,76 @@ int main(int argc, char** argv) {
             const auto ok = ext->on_action(inst, "menu_tap", packed);
             std::printf("menu tap %d,%d (%s) accepted %u\n", x, y, what, ok);
         };
+        // Changes are made while the game is paused (as the game's own menu does).
+        sim.guest.SetPause(true);
+        sample_n(2);
         show("equipment");
-        tap(237, 531, "arcana card");
+        tap(140, 360, "arcana card");
         show("arcanas");
-        tap(297, 294, "Infernal Pyre");
+        tap(395, 168, "Infernal Pyre");
         show("pyre inspected");
-        tap(297, 294, "Infernal Pyre again");
+        tap(395, 168, "Infernal Pyre again");
         helper_log("equip the pyre");
         std::printf("back accepted %u\n", ext->on_action(inst, "menu_back", 0));
         show("back");
-        tap(609, 529, "weapon card");
+        tap(526, 360, "weapon card");
         show("armoury");
         ext->on_action(inst, "menu_back", 0);
         show("equipment");
-        tap(963, 413, "relic slot 2");
+        tap(946, 290, "relic slot 2");
         show("relics, slot 2");
-        tap(401, 521, "Crypt Key");
+        tap(94, 365, "Crypt Key");
         show("crypt key inspected");
-        tap(401, 521, "Crypt Key again");
+        tap(94, 365, "Crypt Key again");
         helper_log("crypt key into slot 2");
         sample_n(32);
         show("after equip");
         std::printf("  worn now: %d\n", sim.guest.Get<std::uint64_t>(sim.guest.Get<std::uint64_t>(sim.guest.inv_ + 0x40) + 0x28) == sim.guest.items_[5]);
-        tap(620, 355, "slot 2 again");
+        tap(355, 167, "slot 2 again");
         helper_log("take it off");
         sample_n(32);
         show("relic off");
-        tap(773, 355, "relic slot 3 (locked)");
+        tap(540, 167, "relic slot 3 (locked)");
         ext->on_action(inst, "menu_back", 0);
         sample_n(32);
         show("equipment again");
+        sim.guest.SetPause(false);
+        tap(140, 360, "arcana card (not paused)");
+        show("arcanas, playing");
+        tap(395, 168, "Infernal Pyre");
+        show("pyre, playing");
+        tap(395, 168, "Infernal Pyre again");
+        helper_log("equip while playing: refused");
+        ext->on_action(inst, "menu_back", 0);
+        sample_n(2);
+    }
+    // Dragging the map: the view moves with the finger, the player marker the same way, and
+    // the player button shows; it goes back at once with the button.
+    {
+        sample_n(2);
+        const auto st = [&](const char* when) {
+            std::printf("%s: ox=%lld oy=%lld mk=%lld,%lld home=%lld show=%lld req=%lld key=%s\n", when,
+                        static_cast<long long>(sim.ints["bc.map.ox"]), static_cast<long long>(sim.ints["bc.map.oy"]),
+                        static_cast<long long>(sim.ints["bc.mk.dx"]), static_cast<long long>(sim.ints["bc.mk.dy"]),
+                        static_cast<long long>(sim.ints["bc.pan.home"]), static_cast<long long>(sim.ints["bc.map.show"]),
+                        static_cast<long long>(sim.ints["bc.map.reqshow"]), sim.texts["bc.map.key"].c_str());
+        };
+        st("before drag");
+        const auto drag = [&](int dx, int dy) {
+            const long long packed = (static_cast<long long>(dx) << 32) | static_cast<unsigned>(dy);
+            ext->on_action(inst, "map_pan", packed);
+        };
+        for (int i = 0; i < 10; ++i)
+            drag(-30, 12), sample_n(1);
+        st("dragged -300,+120");
+        save(sim.texts["bc.map.key"], "sim_pan");
+        for (int i = 0; i < 40; ++i)
+            drag(-40, 0), sample_n(1);
+        st("dragged 1600 more");
+        ext->on_action(inst, "map_home", 0);
+        sample_n(3);
+        st("home");
+        std::printf("windows drawn so far %d\n", windows_drawn);
     }
     // Pins: the game's markers (a cross at (52, 46), a chest at (28, 34)). Standing on the cross
     // puts it at the canvas centre (the view keeps the player's point there), so the taps below
@@ -528,7 +586,7 @@ int main(int argc, char** argv) {
     {
         sim.guest.Put<float>(sim.guest.explorer_ + 0x90, 52.0f);
         sim.guest.Put<float>(sim.guest.explorer_ + 0x94, 46.0f);
-        sample_n(32);
+        sample_paced(40);
         const int px = 620, py = 540;
         ext->on_action(inst, "pin_mode", 0);
         ext->on_action(inst, "pin_type", 2);
@@ -546,8 +604,15 @@ int main(int argc, char** argv) {
         tap(px + 300, py, "eye on empty map: add");
         ext->on_action(inst, "pin_type", 0);
         tap(px, py, "cross on the cross: remove");
+        ext->on_action(inst, "pin_type", 3);
+        sample_n(2);
+        std::printf("eraser: hint %s k3 %s\n", sim.texts["bc.pin.hint"].c_str(), sim.texts["bc.pin.k3"].c_str());
+        tap(px - 480 + 15, py + 240 - 10, "eraser near the chest: remove");
+        tap(px - 400, py - 300, "eraser on nothing: refused");
+        ext->on_action(inst, "pin_type", 0);
         save(sim.texts["bc.map.key"], "sim_pins_close");
-        for (const char* k : {"zbtn:2", "zbtn:0", "zoom:2", "btn:pin:0", "btn:pin:1", "pin:0:0", "pin:2:1", "pinhint"})
+        for (const char* k : {"zbtn:2", "zbtn:0", "zoom:2", "btn:pin:0", "btn:pin:1", "pin:0:0", "pin:2:1", "pin:3:0",
+                             "pin:3:1", "pinhint:0", "pinhint:1", "home"})
             {
                 std::string n = k;
                 for (char& c : n)
@@ -604,6 +669,10 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(450));
         sample_n(1);
         flags("loading held");
+        std::printf("fact=%lld key=%s load0=%lld load1=%lld\n", static_cast<long long>(sim.ints["bc.ui.fact"]),
+                    sim.texts["bc.ui.factkey"].c_str(), static_cast<long long>(sim.ints["bc.ui.load0"]),
+                    static_cast<long long>(sim.ints["bc.ui.load1"]));
+        save(sim.texts["bc.ui.factkey"], "sim_ui5_fact");
         save(sim.texts["bc.ui.lart"], "sim_ui5_loadart");
         for (int d = 1; d <= 3; ++d)
             save("module:bc:ui:loadtxt:" + std::to_string(d), "sim_ui5_loadtxt" + std::to_string(d));

@@ -1484,4 +1484,79 @@ std::vector<std::uint8_t> Render(const Scene& scene, const bc_levelmap::Font& fo
     return canvas.Encode();
 }
 
+void Fit(Part& part, const Rect& src, float ch, float x, float y, float w, float h, float k_max, bool top) {
+    if (src.w <= 0 || src.h <= 0)
+        return;
+    const float k = std::min({w / src.w, h / src.h, k_max});
+    part.k = k;
+    // The source's top-left goes to the box's, centred.
+    const float dx = x + (w - src.w * k) / 2, dy = top ? y : y + (h - src.h * k) / 2;
+    part.ox = src.x * k - dx;
+    part.oy = (ch - (src.y + src.h)) * k - dy;
+}
+
+Rect Bounds(const Scene& scene, int node, const std::vector<bool>* hide) {
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    const std::function<void(int)> walk = [&](int i) {
+        const Node& n = scene.nodes[static_cast<std::size_t>(i)];
+        if (!n.active || (hide && i < static_cast<int>(hide->size()) && (*hide)[static_cast<std::size_t>(i)]) ||
+            n.alpha <= 0.003f)
+            return;
+        bool drawn = false;
+        for (const auto& t : n.texts)
+            drawn |= !t.text.empty();
+        for (const auto& im : n.images)
+            drawn |= (im.sprite != nullptr || !im.runtime) && im.color.a > 0.003f;
+        if (drawn && n.rect.w > 0 && n.rect.h > 0) {
+            x0 = std::min(x0, n.rect.x), y0 = std::min(y0, n.rect.y);
+            x1 = std::max(x1, n.rect.x + n.rect.w), y1 = std::max(y1, n.rect.y + n.rect.h);
+        }
+        for (int c : n.children)
+            walk(c);
+    };
+    if (node >= 0)
+        walk(node);
+    if (x1 <= x0 || y1 <= y0)
+        return {};
+    return {x0, y0, x1 - x0, y1 - y0};
+}
+
+void PartRect(const Part& part, const Rect& r, float ch, float& x, float& y, float& w, float& h) {
+    PixelRect(r, part.k, ch, x, y, w, h);
+    x -= part.ox;
+    y -= part.oy;
+}
+
+std::vector<std::uint8_t> RenderParts(const Scene& scene, const bc_levelmap::Font& font, float ch, int w, int h,
+                                      const std::vector<Part>& parts, const std::vector<bool>* hide) {
+    bc_ui::Canvas canvas(w, h);
+    std::vector<bool> mask = hide ? *hide : std::vector<bool>(scene.nodes.size(), false);
+    mask.resize(scene.nodes.size(), false);
+    for (const auto& part : parts) {
+        for (int e : part.exclude)
+            if (e >= 0)
+                mask[static_cast<std::size_t>(e)] = true;
+        Painter p{scene, font, part.k, ch, canvas, &mask, {}, part.ox, part.oy};
+        for (int node : part.nodes) {
+            if (node < 0)
+                continue;
+            // The alpha of its parents (canvas groups); nothing when one is off.
+            float alpha = 1;
+            bool on = true;
+            for (int a = scene.nodes[static_cast<std::size_t>(node)].parent; a >= 0;
+                 a = scene.nodes[static_cast<std::size_t>(a)].parent) {
+                const Node& an = scene.nodes[static_cast<std::size_t>(a)];
+                on &= an.active && !mask[static_cast<std::size_t>(a)];
+                alpha *= an.alpha;
+            }
+            if (on)
+                p.Draw(node, alpha);
+        }
+        for (int e : part.exclude)
+            if (e >= 0)
+                mask[static_cast<std::size_t>(e)] = hide && static_cast<std::size_t>(e) < hide->size() && (*hide)[static_cast<std::size_t>(e)];
+    }
+    return canvas.Encode();
+}
+
 } // namespace bc_menu

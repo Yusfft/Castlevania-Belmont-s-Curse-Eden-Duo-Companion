@@ -685,29 +685,162 @@ void Menu::Bind(Scene& sc, const Snapshot& s) {
     }
 }
 
-std::vector<std::uint8_t> Menu::Render(const Snapshot& s, int w, int h, std::vector<Target>* targets) {
-    if (!scene_ || !font_)
-        return {};
-    const auto t0 = std::chrono::steady_clock::now();
-    const auto lap = [&](const char* what) {
-        if (std::getenv("BC_MENU_TIME"))
-            std::fprintf(stderr, "  %s %.0f ms\n", what,
-                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+namespace {
+using bc_menu::Part;
+using bc_menu::Rect;
+Rect Union(const Rect& a, const Rect& b) {
+    if (a.w <= 0)
+        return b;
+    if (b.w <= 0)
+        return a;
+    const float x0 = std::min(a.x, b.x), y0 = std::min(a.y, b.y);
+    return {x0, y0, std::max(a.x + a.w, b.x + b.w) - x0, std::max(a.y + a.h, b.y + b.h) - y0};
+}
+} // namespace
+
+std::vector<bc_menu::Part> Menu::Compose(Scene& sc, const Snapshot& s, int w, int h, float ch,
+                                         const std::vector<bool>& hide) {
+    // The page is designed at 1240 x 1080 (the AYN Thor's lower screen); boxes scale with it.
+    const float fx = static_cast<float>(w) / 1240.0f, fy = static_cast<float>(h) / 1080.0f;
+    std::vector<Part> parts;
+    const auto F = [&](const char* path, int under = -1) { return sc.Path(path, under); };
+    const auto bounds = [&](int n) { return n >= 0 ? bc_menu::Bounds(sc, n, &hide) : Rect{}; };
+    // Subtrees at one scale, `fit` put in the box (page px, 1240 x 1080 design).
+    const auto place = [&](std::vector<int> nodes, const Rect& fit, float x, float y, float bw, float bh,
+                           float k_max = 1e9f, std::vector<int> exclude = {}, bool top = false) -> Part& {
+        Part p;
+        p.nodes = std::move(nodes);
+        p.exclude = std::move(exclude);
+        bc_menu::Fit(p, fit, ch, x * fx, y * fy, bw * fx, bh * fy, k_max * std::min(fx, fy), top);
+        parts.push_back(std::move(p));
+        return parts.back();
     };
-    Scene sc = *scene_;
-    lap("copy");
-    Bind(sc, s);
-    lap("bind");
-    float cw, ch, scale;
-    bc_menu::CanvasSize(w, h, kMatch, cw, ch, scale);
-    bc_menu::Layout(sc, *font_, cw, ch);
-    // The inventories' dark backdrops cover the game's 16:9 screen; on this taller page they
-    // cover all of it, as they do in the game.
-    for (auto& n : sc.nodes)
-        if (n.name == "CommonUI_DarkOverlay")
-            n.rect = bc_menu::Rect{0, 0, cw, ch};
-    lap("layout");
-    // Hidden: other views, input prompts and footnotes (no buttons on a touch screen).
+    // A backdrop covering the page (its aspect kept, centred).
+    const auto cover = [&](int n) {
+        if (n < 0)
+            return;
+        Node& nd = sc.nodes[static_cast<std::size_t>(n)];
+        if (nd.rect.w <= 0 || nd.rect.h <= 0)
+            return;
+        const float k = static_cast<float>(h) / ch;
+        const float pw = static_cast<float>(w) / k, ph = ch;
+        const float ar = nd.rect.w / nd.rect.h;
+        float rw = ph * ar, rh = ph;
+        if (rw < pw)
+            rw = pw, rh = pw / ar;
+        nd.rect = Rect{(pw - rw) / 2, (ph - rh) / 2, rw, rh};
+        Part p;
+        p.nodes = {n};
+        p.k = k;
+        parts.push_back(std::move(p));
+    };
+    // A part's box on the page (px).
+    const auto box = [&](const Part& p, const Rect& r, float& x, float& y, float& bw, float& bh) {
+        bc_menu::PartRect(p, r, ch, x, y, bw, bh);
+    };
+    // An inventory's banner across the top, its title in it at a size that reads.
+    const auto header = [&](int node, const char* title_name, float bh) {
+        const int title = F(title_name, node);
+        place({node}, bounds(node), -10, 0, 1260, bh, 1e9f, {title}, true);
+        if (title >= 0) {
+            const Part& banner = parts.back();
+            float x, y, tw, th;
+            box(banner, sc.nodes[static_cast<std::size_t>(title)].rect, x, y, tw, th);
+            place({title}, bounds(title), 320, y / fy + th / fy / 2 - 30, 600, 60, 0.62f);
+        }
+    };
+    if (s.view == 0) {
+        const int root = F("EquipmentView");
+        cover(F("TabsContent_Group/Background"));
+        cover(F("OverlayDark", root));
+        const int tabs = F("TabsButtons_ToggleGroup");
+        place({tabs}, bounds(tabs), 8, 2, 1224, 84);
+        // The section ribbon across the page, the titles over their parts.
+        if (const int banner = F("Header/Banner_Background", root); banner >= 0) {
+            Node& b = sc.nodes[static_cast<std::size_t>(banner)];
+            const float k = 56.0f * fy / std::max(b.rect.h, 1.0f);
+            b.rect.w = (static_cast<float>(w) + 60.0f) / k;
+            place({banner}, b.rect, -30, 88, 1300, 56);
+        }
+        const int arcana = F("Arcana", root), weapon = F("Weapon", root);
+        const Rect cards_fit = Union(bounds(arcana), bounds(weapon));
+        const Part cards = place({F("CardSupport", root), arcana, weapon}, cards_fit, 0, 146, 660, 466);
+        const int slots = F("Charms/BringToFrontWrapper", root);
+        const Part relics = place({slots}, bounds(slots), 668, 186, 560, 280);
+        const auto title = [&](const char* name, const Part& over, const Rect& r) {
+            const int t = F(name, root);
+            if (t < 0)
+                return;
+            float x, y, bw, bh;
+            box(over, r, x, y, bw, bh);
+            place({t}, bounds(t), (x + bw / 2) / fx - 180, 90, 360, 52, 0.62f);
+        };
+        title("Header/ArcanaInventoryTitle", cards, bounds(arcana));
+        title("Header/WeaponInventoryTitle", cards, bounds(weapon));
+        title("Header/CharmsInventoryTitle", relics, bounds(slots));
+        const int info = F("Charms/Charms_PreviewBox", root);
+        place({info}, bounds(info), 20, 604, 1200, 276, 0.66f);
+        const int stats = F("StatSummary", root);
+        place({stats}, bounds(stats), 20, 884, 1200, 136);
+    } else if (s.view == 1) {
+        const int ov = F("Overlay_WeaponInventory");
+        cover(F("CommonUI_DarkOverlay", ov));
+        // In the game's drawing order: the parchment and the list, the card, the banner over them.
+        const int grid = F("InventoryGroup", ov);
+        place({F("ParchmentSupport", ov), grid}, bounds(grid), 6, 116, 640, 870, 1e9f, {}, true);
+        const int info = F("WeaponCard_Info", ov);
+        place({info}, bounds(info), 652, 122, 582, 880);
+        header(F("Header", ov), "InventoryTitle", 118);
+    } else if (s.view == 2) {
+        const int ov = F("Overlay_CharmsInventory");
+        cover(F("CommonUI_DarkOverlay", ov));
+        const int grid = F("InventoryGroup", ov);
+        place({F("ParchmentSupport", ov), grid}, bounds(grid), 10, 100, 692, 880, 1e9f, {}, true);
+        // The card of the relic inspected, else of the one in the slot picked.
+        const int card = F(s.inspect.empty() ? "Equipped_PreviewCard" : "Selected_PreviewCard", ov);
+        const int info = F("CharmCard_Info", card);
+        place({card}, bounds(info), 708, 100, 526, 900, 1e9f, {F("CardSupport", card)}, true);
+        header(F("Header", ov), "InventoryTitle", 120);
+    } else if (s.view == 3) {
+        const int ov = F("Overlay_SpellInventory");
+        cover(F("CommonUI_DarkOverlay", ov));
+        cover(F("ParchmentBackground_Anim", ov));
+        header(F("Banner_Anim", ov), "InventoryTitle", 112);
+        // The arcanas in two rows, larger than the game's one.
+        std::vector<int> items;
+        if (const int list = F("SpellList_HorizontalLayout_Anim", ov); list >= 0)
+            for (int c : sc.nodes[static_cast<std::size_t>(list)].children)
+                if (sc.nodes[static_cast<std::size_t>(c)].active && !hide[static_cast<std::size_t>(c)] &&
+                    bounds(c).w > 0)
+                    items.push_back(c);
+        const int per_row = static_cast<int>((items.size() + 1) / 2);
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            const int row = static_cast<int>(i) / std::max(per_row, 1), col = static_cast<int>(i) % std::max(per_row, 1);
+            const int in_row = row == 0 ? per_row : static_cast<int>(items.size()) - per_row;
+            const float pitch = std::min(150.0f, 1220.0f / static_cast<float>(std::max(per_row, 1)));
+            const float x0 = (1240.0f - pitch * static_cast<float>(in_row)) / 2;
+            // Fitted by the slot (its art reaches past it).
+            const int slot = F("CommonUI_SpellSlot", items[i]);
+            const Rect fit = slot >= 0 && sc.nodes[static_cast<std::size_t>(slot)].rect.w > 0
+                                 ? sc.nodes[static_cast<std::size_t>(slot)].rect
+                                 : bounds(items[i]);
+            place({items[i]}, fit, x0 + pitch * static_cast<float>(col), 112 + 118 * static_cast<float>(row),
+                  pitch, 112, 0.85f);
+        }
+        const int card = F("ArcanaCard_Display_Anim", ov);
+        place({card}, bounds(card), 10, 356, 340, 650, 1e9f, {}, true);
+        const int spell = F("Spell_Anim", ov);
+        const int preview = F("Spell_PreviewBox_Anim", spell), gems = F("SpellTalentGem_Support_Mask", spell);
+        const Rect icon = Union(Union(bounds(F("SpellSlot", spell)), bounds(F("Spell", spell))), bounds(F("EquippedText", spell)));
+        place({spell}, icon, 360, 352, 870, 250, 0.62f, {preview, gems});
+        place({preview}, bounds(preview), 360, 610, 870, 398, 1e9f, {}, true);
+    }
+    return parts;
+}
+
+namespace {
+/// What the page never shows: input prompts and footnotes (no buttons on a touch screen).
+std::vector<bool> Hidden(const Scene& sc) {
     std::vector<bool> hide(sc.nodes.size(), false);
     static const char* const kAlways[] = {
         "Footnote_Equipment", "Footnote_Inventory", "Footnote_CharmsInventory", "Footnote_InventorySpell",
@@ -731,6 +864,128 @@ std::vector<std::uint8_t> Menu::Render(const Snapshot& s, int w, int h, std::vec
         for (const char* p : kPrefixes)
             if (sc.nodes[i].name.rfind(p, 0) == 0)
                 hide[i] = true;
+    return hide;
+}
+} // namespace
+
+std::vector<std::uint8_t> Menu::RenderFact(const std::string& title, const std::string& text, int art,
+                                           const std::string& item, int w, int h) {
+    if (!scene_ || !font_)
+        return {};
+    Scene sc = *scene_;
+    Snapshot s;
+    s.ok = true;
+    s.slot = 0;
+    if (art == 1)
+        s.spell = item;
+    else if (art == 2)
+        s.weapon = item;
+    else if (art == 3)
+        s.charms = {item};
+    Bind(sc, s);
+    const int root = sc.Find("EquipmentView");
+    const int box = sc.Path("Charms/Charms_PreviewBox", root);
+    if (box < 0)
+        return {};
+    // The box shows the fact; it grows with the text (about 46 characters a line).
+    for (int n = box; n >= 0; n = sc.nodes[static_cast<std::size_t>(n)].parent)
+        sc.nodes[static_cast<std::size_t>(n)].active = true;
+    const int name = sc.Find("ItemName", box), desc = sc.Find("ItemDescription", box);
+    SetText(sc, name, title);
+    SetText(sc, desc, text);
+    const float lines = std::ceil(static_cast<float>(text.size()) / 46.0f);
+    sc.nodes[static_cast<std::size_t>(box)].size[1] += std::max(0.0f, lines * 62.0f + 30.0f - 277.0f);
+    bc_menu::Layout(sc, *font_, 3840, 2160);
+    const std::vector<bool> hide = Hidden(sc);
+    std::vector<bc_menu::Part> parts;
+    const auto place = [&](std::vector<int> nodes, const Rect& fit, float x, float y, float bw, float bh) {
+        Part p;
+        p.nodes = std::move(nodes);
+        bc_menu::Fit(p, fit, 2160, x, y, bw, bh);
+        parts.push_back(std::move(p));
+    };
+    const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+    float text_x = 0;
+    if (art == 1 || art == 2) {
+        const int card = sc.Find(art == 1 ? "Arcana" : "Weapon", root);
+        const Rect b = bc_menu::Bounds(sc, card, &hide);
+        if (b.w > 0) {
+            const float cw = std::min(fh * b.w / b.h, fw * 0.3f);
+            place({card}, b, 0, 0, cw, fh);
+            text_x = cw + fw * 0.02f;
+            // A weapon's card has no frame of its own here: the arcana card's gold frame.
+            const int wcard = art == 2 ? sc.Find("WeaponCard", card) : -1;
+            const int frame = sc.Path("Arcana/Equippement_Spell_ItemSlot/ArcanaCard_Display/Card/Frame", root);
+            if (wcard >= 0 && frame >= 0) {
+                float x, y, ww, hh;
+                bc_menu::PartRect(parts.back(), sc.nodes[static_cast<std::size_t>(wcard)].rect, 2160, x, y, ww, hh);
+                // (The empty arcana slot hides it: shown here on its own.)
+                for (int n = frame; n >= 0; n = sc.nodes[static_cast<std::size_t>(n)].parent)
+                    sc.nodes[static_cast<std::size_t>(n)].active = true, sc.nodes[static_cast<std::size_t>(n)].alpha = 1;
+                for (int c : sc.nodes[static_cast<std::size_t>(frame)].children)
+                    sc.nodes[static_cast<std::size_t>(c)].active = true;
+                Part p;
+                p.nodes = {frame};
+                const Rect fr = sc.nodes[static_cast<std::size_t>(frame)].rect;
+                // Stretched to the card (the frame is drawn as the game slices it).
+                p.k = hh / fr.h;
+                bc_menu::Fit(p, fr, 2160, x - (fr.w * p.k - ww) / 2, y, fr.w * p.k, hh);
+                parts.push_back(std::move(p));
+            }
+        }
+    } else if (art == 3) {
+        const int slot = sc.Path("Charms/BringToFrontWrapper/EquippedCharmSlot", root);
+        const Rect b = bc_menu::Bounds(sc, slot, &hide);
+        if (b.w > 0) {
+            const float cw = std::min(fh * 0.7f, fw * 0.26f);
+            place({slot}, b, 0, (fh - cw) / 2, cw, cw);
+            text_x = cw + fw * 0.03f;
+        }
+    }
+    const Rect bb = bc_menu::Bounds(sc, box, &hide);
+    if (bb.w <= 0)
+        return {};
+    place({box}, bb, text_x, 0, fw - text_x, fh);
+    return bc_menu::RenderParts(sc, *font_, 2160, w, h, parts, &hide);
+}
+
+std::vector<std::uint8_t> Menu::Render(const Snapshot& s, int w, int h, std::vector<Target>* targets) {
+    if (!scene_ || !font_)
+        return {};
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto lap = [&](const char* what) {
+        if (std::getenv("BC_MENU_TIME"))
+            std::fprintf(stderr, "  %s %.0f ms\n", what,
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    };
+    Scene sc = *scene_;
+    lap("copy");
+    Bind(sc, s);
+    lap("bind");
+    // A page much narrower than the game's screen gets the game's 16:9 layout rearranged (Compose);
+    // a wide one shows it as the game does.
+    const bool tall = static_cast<float>(w) < 1.5f * static_cast<float>(h);
+    float cw, ch, scale;
+    if (tall)
+        cw = 3840, ch = 2160, scale = 1;
+    else
+        bc_menu::CanvasSize(w, h, kMatch, cw, ch, scale);
+    bc_menu::Layout(sc, *font_, cw, ch);
+    if (!tall) {
+        // The inventories' dark backdrops cover the game's 16:9 screen; on a taller page they
+        // cover all of it, as they do in the game.
+        for (auto& n : sc.nodes)
+            if (n.name == "CommonUI_DarkOverlay")
+                n.rect = bc_menu::Rect{0, 0, cw, ch};
+    }
+    lap("layout");
+    // Hidden: other views, input prompts and footnotes (no buttons on a touch screen).
+    std::vector<bool> hide = Hidden(sc);
+    const auto hide_name = [&](const char* name) {
+        for (std::size_t i = 0; i < sc.nodes.size(); ++i)
+            if (sc.nodes[i].name == name)
+                hide[i] = true;
+    };
     if (const char* at = std::getenv("BC_MENU_AT")) {
         // The drawn images under a pixel, in drawing order.
         float px = 0, py = 0;
@@ -771,8 +1026,46 @@ std::vector<std::uint8_t> Menu::Render(const Snapshot& s, int w, int h, std::vec
     if (s.view != 3)
         hide_name("Overlay_SpellInventory");
     lap("hide");
-    auto px = bc_menu::Render(sc, *font_, scale, w, h, &hide);
+    if (std::getenv("BC_MENU_LIST")) {
+        // Every node drawn (with an image or a text), its path and rect (units).
+        const std::function<void(int, const std::string&)> walk = [&](int i, const std::string& path) {
+            const Node& n = sc.nodes[static_cast<std::size_t>(i)];
+            if (!n.active || hide[static_cast<std::size_t>(i)] || n.alpha <= 0.003f)
+                return;
+            const std::string p = path.empty() ? n.name : path + "/" + n.name;
+            bool drawn = !n.texts.empty();
+            for (const auto& im : n.images)
+                drawn |= im.sprite != nullptr || !im.runtime;
+            if (drawn)
+                std::fprintf(stderr, "LIST %.0f,%.0f %.0fx%.0f %s%s\n", n.rect.x, n.rect.y, n.rect.w, n.rect.h, p.c_str(),
+                             n.texts.empty() ? "" : (" '" + n.texts[0].text.substr(0, 24) + "' size " + std::to_string(static_cast<int>(n.texts[0].size)) + (n.texts[0].autosize ? "A" + std::to_string(static_cast<int>(n.texts[0].size_max)) : std::string())).c_str());
+            for (int c : n.children)
+                walk(c, p);
+        };
+        walk(sc.root, "");
+    }
+    std::vector<bc_menu::Part> parts;
+    if (tall)
+        parts = Compose(sc, s, w, h, ch, hide);
+    auto px = tall ? bc_menu::RenderParts(sc, *font_, ch, w, h, parts, &hide) : bc_menu::Render(sc, *font_, scale, w, h, &hide);
     lap("render");
+    // Where a node is on the page: in the part that draws it (none: not on the page).
+    std::vector<int> part_of;
+    if (tall) {
+        part_of.assign(sc.nodes.size(), -1);
+        for (std::size_t pi = 0; pi < parts.size(); ++pi) {
+            const std::function<void(int)> mark = [&](int i) {
+                if (std::find(parts[pi].exclude.begin(), parts[pi].exclude.end(), i) != parts[pi].exclude.end())
+                    return;
+                part_of[static_cast<std::size_t>(i)] = static_cast<int>(pi);
+                for (int c : sc.nodes[static_cast<std::size_t>(i)].children)
+                    mark(c);
+            };
+            for (int n : parts[pi].nodes)
+                if (n >= 0)
+                    mark(n);
+        }
+    }
     if (targets) {
         targets->clear();
         const auto add = [&](Target::Kind k, int node, int index = 0, const std::string& item = {}) {
@@ -782,7 +1075,14 @@ std::vector<std::uint8_t> Menu::Render(const Snapshot& s, int w, int h, std::vec
             if (!n.active)
                 return;
             Target t{k, index, item, 0, 0, 0, 0};
-            bc_menu::PixelRect(n.rect, scale, ch, t.x, t.y, t.w, t.h);
+            if (tall) {
+                const int pi = part_of[static_cast<std::size_t>(node)];
+                if (pi < 0)
+                    return;
+                bc_menu::PartRect(parts[static_cast<std::size_t>(pi)], n.rect, ch, t.x, t.y, t.w, t.h);
+            } else {
+                bc_menu::PixelRect(n.rect, scale, ch, t.x, t.y, t.w, t.h);
+            }
             if (t.w > 1 && t.h > 1)
                 targets->push_back(std::move(t));
         };
@@ -836,8 +1136,11 @@ std::vector<std::uint8_t> Menu::Render(const Snapshot& s, int w, int h, std::vec
                                                                                             : "Overlay_SpellInventory");
                 add(Target::Close, ov >= 0 ? sc.Find(p, ov) : -1, -1);
             }
-            Target all{Target::Close, 0, {}, 0, 0, static_cast<float>(w), static_cast<float>(h)};
-            targets->push_back(all);
+            // A tap outside closes the inventory (on the rearranged page: only the Back button).
+            if (!tall) {
+                Target all{Target::Close, 0, {}, 0, 0, static_cast<float>(w), static_cast<float>(h)};
+                targets->push_back(all);
+            }
         }
     }
     return px;

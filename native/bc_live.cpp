@@ -23,6 +23,7 @@ constexpr u64 kSystemManagerTypeInfo = 0x6D47368;
 constexpr u64 kGameStateManagerTypeInfo = 0x6D42540;
 constexpr u64 kSystemManagerEncoded = 0x200117D1; // unresolved metadata-usage token (TypeInfo #35816)
 constexpr u64 kUIManagerTypeInfo = 0x6D47F10;
+constexpr int kStaticFieldsDefault = 0xB8; // Il2CppClass.static_fields in this build
 constexpr u64 kWeaponItemDataTypeInfo = 0x6D488C8;
 constexpr u64 kSpellItemDataTypeInfo = 0x6D46D00;
 constexpr u64 kCharmItemDataTypeInfo = 0x6D404E8;
@@ -773,6 +774,13 @@ void Reader::ReadPause(const Memory& mem, State& out) {
         out.ctx_ok = true;
         out.ctx_paused = b != 0;
     }
+    // A menu or the pause screen: the state pauses the game and takes UI input. Loading,
+    // transitions and cutscenes do not count.
+    out.paused = out.ctx_ok && out.ctx_paused && out.gs_pause && out.gs_ui;
+}
+
+void Reader::ReadGameState(const Memory& mem, State& out) {
+    Io io{mem};
     u64 klass = 0;
     const u64 slot = mem.main_base + kGameStateManagerTypeInfo + static_cast<u64>(delta_);
     if (!io.Get(slot, klass) || klass == 0 || (klass & 7) != 0)
@@ -784,10 +792,13 @@ void Reader::ReadPause(const Memory& mem, State& out) {
             return;
         gsm_class_ = klass;
     }
-    u64 sf = 0, gsm = 0, stack = 0, arr = 0, len = 0, entry = 0, state = 0, maps = 0, n = 0;
+    u64 sf = 0, gsm = 0, gsm_class = 0, stack = 0, arr = 0, len = 0, entry = 0, state = 0, maps = 0, n = 0;
     s32 size = 0;
-    if (!sf_offset_ || !io.Ptr(klass + static_cast<u64>(sf_offset_), sf) || !io.Ptr(sf, gsm) ||
-        !io.Ptr(gsm + kGsmStates, stack) || !io.Get(stack + kStackSize, size) || size <= 0 || size > 64 ||
+    // Before the SystemManager is there (title screen) its static-fields offset is not learnt
+    // yet: Il2CppClass.static_fields of this build, checked by the instance's own class.
+    const int sfo = sf_offset_ ? sf_offset_ : kStaticFieldsDefault;
+    if (!io.Ptr(klass + static_cast<u64>(sfo), sf) || !io.Ptr(sf, gsm) || !io.Get(gsm, gsm_class) ||
+        gsm_class != klass || !io.Ptr(gsm + kGsmStates, stack) || !io.Get(stack + kStackSize, size) || size <= 0 || size > 64 ||
         !io.Ptr(stack + kStackArray, arr) || !io.Get(arr + kArrayLength, len) || len < static_cast<u64>(size) ||
         !io.Ptr(arr + kArrayData + 8 * static_cast<u64>(size - 1), entry) ||
         !io.Ptr(entry + kStateEntryState, state))
@@ -816,9 +827,7 @@ void Reader::ReadPause(const Memory& mem, State& out) {
             ui = ui || name == "UI";
         }
     }
-    // A menu or the pause screen: the state pauses the game and takes UI input. Loading,
-    // transitions and cutscenes do not count.
-    out.paused = out.ctx_ok && out.ctx_paused && out.gs_pause && ui;
+    out.gs_ui = ui;
 }
 
 void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
@@ -829,6 +838,8 @@ void Reader::Sample(const Memory& mem, bool with_fog, State& out) {
         return;
     out.stage = 1;
     out.delta = delta_;
+    // The game state stack exists from the title screen on (the main menu pushes its state).
+    ReadGameState(mem, out);
     if (!ResolveSystemManager(mem, out) || !FindSystems(mem, out))
         return;
     out.status = "ok";

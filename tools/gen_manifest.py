@@ -27,14 +27,18 @@ ZBTN_W, ZBTN_H = 230, 64      # kZoomButtonW / kZoomButtonH
 ZBTN_X, ZBTN_Y = 40, H - ZBTN_H - 30
 PIN_CELL = 84                 # kPinCell
 PIN_TYPES = 3                 # kPinTypes
+PIN_TOOLS = PIN_TYPES + 1      # kPinTools (the eraser last)
 BTN_W, BTN_H = 170, 56        # kButtonW / kButtonH
 LABEL_W, LABEL_H = 700, 70    # kLabelW / kLabelH
 PIN_X, PIN_Y = W - BTN_W - 40, 30
+HOME_X, HOME_Y = W - 40 - (BTN_W + PIN_CELL) // 2, H - BTN_H - 34 - PIN_CELL - 20
 GO_W, GO_H = 760, 420         # kGameOverW / kGameOverH
 PAUSED_W, PAUSED_H = 600, 200 # kPausedW / kPausedH
 PROMPT_W, PROMPT_H = 700, 70  # kPromptW / kPromptH
 VER_W, VER_H = 460, 50        # kVersionW / kVersionH
 LOAD_W, LOAD_H = 900, 80      # kLoadingW / kLoadingH
+FACT_W, FACT_H = 1180, 430    # kFactW / kFactH
+FACT_Y = 540
 TAB_W, TAB_H = 220, 64        # kTabW / kTabH
 EQ_MSG_W, EQ_MSG_H = 560, 56    # kEqMsgW / kEqMsgH
 
@@ -85,11 +89,14 @@ map_page = {
     "title": "Map",
     "widgets": [
         rect([0, 0, W, H], BG),
-        # Follow view: the previous window stays underneath while the next one loads.
+        # Follow view: the window before stays underneath (it fills the edges while the view moves).
         {"type": "image", "rect": [0, 0, 2048, 1536], "src_bind": "bc.map.pkey",
          "x_bind": "bc.map.pox", "y_bind": "bc.map.poy", "need_bind": "bc.map.pshow"},
         {"type": "image", "rect": [0, 0, 2048, 1536], "src_bind": "bc.map.key",
-         "x_bind": "bc.map.ox", "y_bind": "bc.map.oy", "need_bind": "bc.map.follow"},
+         "x_bind": "bc.map.ox", "y_bind": "bc.map.oy", "need_bind": "bc.map.show"},
+        # The next window, asked for (the host draws a picture only once a widget shows it) in
+        # one pixel under the frame's corner; the page switches to it once it is drawn.
+        {"type": "image", "rect": [2, 2, 1, 1], "src_bind": "bc.map.req", "need_bind": "bc.map.reqshow"},
         # The game's player marker, centred: the map moves under it.
         *[marker(b, sz) for b, sz in MARKER.items()],
         # Pause (a menu or the pause screen open in the game): the map blurred under "Paused".
@@ -98,6 +105,10 @@ map_page = {
         rect([0, 0, W, H], "#59000000", **fade("bc.paused", 260)),
         {"type": "image", "rect": [(W - PAUSED_W) // 2, (H - PAUSED_H) // 2, PAUSED_W, PAUSED_H],
          "src": "module:bc:ui:paused", **fade("bc.paused", 260)},
+        # Drag the map: the view follows the finger (the module moves it; it glides back to the
+        # player after a while). Kept clear of the title (hold: debug) and the bottom buttons
+        # (the zoom button's hold), which a pannable widget under the finger would take.
+        rect([0, 130, W, ZBTN_Y - 10 - 130], "#00000000", on_pan="act_map_pan", need_bind="bc.ui.ingame"),
         # Pin mode: a tap anywhere on the map (under the buttons) goes to the module.
         rect([0, 0, W, H], "#00000000", on_tap="act_pin_tap", payload="$tap", need_bind="bc.pin.mode"),
         # Level banner with the area and district names (a plain label until the art is read).
@@ -116,9 +127,21 @@ map_page = {
         # "Loading, be patient" with its dots running 1-2-3.
         {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.ui.lart", **fade("bc.ui.load", 300)},
         {"type": "image", "rect": [(W - LOAD_W) // 2, 860, LOAD_W, LOAD_H], "src_bind": "bc.ui.ltxt",
-         **fade("bc.ui.load", 300)},
-        # The map screen's gold-edged frame (game art, drawn by the module).
+         **fade("bc.ui.load0", 300)},
+        # With a Castlevania fact (the module's own text, drawn in the game's info box beside the
+        # game's art for it) under a smaller card; the loading line at the bottom.
+        {"type": "image", "rect": [(W - FACT_W) // 2, FACT_Y, FACT_W, FACT_H], "src_bind": "bc.ui.factkey",
+         **fade("bc.ui.fact", 400)},
+        {"type": "image", "rect": [(W - LOAD_W) // 2, H - LOAD_H - 14, LOAD_W, LOAD_H], "src_bind": "bc.ui.ltxt",
+         **fade("bc.ui.load1", 300)},
+        # The map screen's gold-edged frame (game art, drawn by the module), and an ember glow on
+        # its gold that breathes: two glow pictures faded in and out on their own beats by the
+        # host (no redraw from the module).
         {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:frame", "need_bind": "bc.ui.ok"},
+        {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:glow:0", **fade("bc.ui.glow0", 1400)},
+        {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:glow:1", **fade("bc.ui.glow1", 900)},
+        # Before the game's title screen (logos, intro): black.
+        rect([0, 0, W, H], "#FF000000", need_bind="bc.ui.boot"),
         # Zoom: a small button (tap: next level out, wrapping to the closest; hold: the scale).
         # Three levels (Far, Near, Close).
         {"type": "image", "rect": [ZBTN_X, ZBTN_Y, ZBTN_W, ZBTN_H], "src_bind": "bc.ui.zbtn",
@@ -144,11 +167,16 @@ map_page = {
         tap([PIN_X, PIN_Y, BTN_W, BTN_H], "act_pin_mode") | {"need_bind": "bc.ui.ingame"},
         *[{"type": "image", "rect": [PIN_X + BTN_W // 2 - PIN_CELL // 2, PIN_Y + BTN_H + 12 + k * (PIN_CELL + 8),
                                      PIN_CELL, PIN_CELL],
-           "src_bind": "bc.pin.k%d" % k, "need_bind": "bc.pin.mode"} for k in range(PIN_TYPES)],
+           "src_bind": "bc.pin.k%d" % k, "need_bind": "bc.pin.mode"} for k in range(PIN_TOOLS)],
         *[tap([PIN_X + BTN_W // 2 - PIN_CELL // 2, PIN_Y + BTN_H + 12 + k * (PIN_CELL + 8), PIN_CELL, PIN_CELL],
-              "act_pin_type%d" % k) | {"need_bind": "bc.pin.mode"} for k in range(PIN_TYPES)],
-        {"type": "image", "rect": [(W - LABEL_W) // 2, H - LABEL_H - 26, LABEL_W, LABEL_H],
-         "src": "module:bc:ui:pinhint", "need_bind": "bc.pin.mode"},
+              "act_pin_type%d" % k) | {"need_bind": "bc.pin.mode"} for k in range(PIN_TOOLS)],
+        # Back to the player, while the map is dragged off (above the debug button).
+        {"type": "image", "rect": [HOME_X, HOME_Y, PIN_CELL, PIN_CELL], "src": "module:bc:ui:home",
+         "need_bind": "bc.pan.home"},
+        tap([HOME_X, HOME_Y, PIN_CELL, PIN_CELL], "act_map_home") | {"need_bind": "bc.pan.home"},
+        # Above the bottom buttons (zoom, equipment, debug), clear of them.
+        {"type": "image", "rect": [(W - LABEL_W) // 2, ZBTN_Y - LABEL_H - 18, LABEL_W, LABEL_H],
+         "src_bind": "bc.pin.hint", "need_bind": "bc.pin.mode"},
         # Debug page.
         {"type": "image", "rect": [W - BTN_W - 40, H - BTN_H - 34, BTN_W, BTN_H], "src": "module:bc:ui:btn:debug",
          "need_bind": "bc.ui.ok"},
@@ -252,7 +280,7 @@ inv_widgets += [
 # Arcanas inventories), drawn by the module from the game's menu scene with what the player
 # wears and owns. One full-page picture (the one before it under it while a new one is drawn);
 # taps go to the module, which looks up what is under them in that picture.
-MENU_MAP_TAB = [113, 16, 201, 57]  # where the menu's Map tab lands on this page (bc_menupage)
+MENU_MAP_TAB = [8, 15, 242, 68]  # where the menu's Map tab lands on this page (bc_menupage)
 eq_widgets = [
     rect([0, 0, W, H], "#FF000000"),
     {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.menu.pkey", "need_bind": "bc.menu.ok"},
@@ -273,7 +301,7 @@ eq_widgets = [
     {"type": "image", "rect": [40, 26, BTN_W, BTN_H], "src": "module:bc:ui:btn:map", "need_bind": "bc.menu.plain"},
     tap([40, 26, BTN_W, BTN_H], "act_map") | {"need_bind": "bc.menu.plain"},
     # The game's answer to a change, in the band every view leaves free above the stats.
-    {"type": "image", "rect": [(W - EQ_MSG_W) // 2, 880, EQ_MSG_W, EQ_MSG_H], "src_bind": "bc.eq.msg",
+    {"type": "image", "rect": [(W - EQ_MSG_W) // 2, H - EQ_MSG_H - 6, EQ_MSG_W, EQ_MSG_H], "src_bind": "bc.eq.msg",
      **fade("bc.eq.msgshow", 200)},
 ]
 
@@ -307,7 +335,9 @@ manifest = {
         "act_zbar_open": {"kind": "module", "action": "zbar_open", "argument": 0},
         "act_zbar_close": {"kind": "module", "action": "zbar_close", "argument": 0},
         "act_pin_mode": {"kind": "module", "action": "pin_mode", "argument": 0},
-        **{"act_pin_type%d" % k: {"kind": "module", "action": "pin_type", "argument": k} for k in range(PIN_TYPES)},
+        **{"act_pin_type%d" % k: {"kind": "module", "action": "pin_type", "argument": k} for k in range(PIN_TOOLS)},
+        "act_map_pan": {"kind": "module", "action": "map_pan", "argument": "$payload"},
+        "act_map_home": {"kind": "module", "action": "map_home", "argument": 0},
         "act_pin_tap": {"kind": "module", "action": "pin_tap", "argument": "$payload"},
         "act_debug": {"kind": "page", "page": "debug", "transition": "fade", "duration_ms": 150},
         "act_map": {"kind": "page", "page": "map", "transition": "fade", "duration_ms": 150},

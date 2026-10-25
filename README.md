@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.8.0)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.9.0)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -27,7 +27,11 @@ equipment and place the game's map markers.
   chest, sun, eye, cup, stick, coin, sword, moon) and the red skull where you last died, with
   the game's own icons, on the map they belong to.
 - **Player marker.** The game's gold star, at the player's exact position every frame. The map
-  slides under it; a new section is drawn in the background when needed.
+  slides under it; a new section is drawn in the background when needed, and the page switches
+  to it only once it is drawn (the host would otherwise show the old section at the new place for
+  a moment).
+- **Drag the map.** Drag a finger over the map to look around; the player button (above Debug)
+  brings the view back, and it glides back by itself after 8 s without a drag.
 - **Area title.** The biome and district names in the game's own font (English).
 - **Rooms in the map's vivid palette**, the one the game uses under its map cursor.
 - **The game's map-screen interface.** The map screen's frame (darkened, so it does not draw the
@@ -42,10 +46,13 @@ equipment and place the game's map markers.
   the game itself (`MapMarkersComponent.AddMarker`), in the navigation zone under the tap, so it
   shows on the game's map screen and is kept in the save. Tapping a marker with another symbol
   picked changes it, with the same symbol removes it; this works on any marker on the map,
-  including ones placed in the game. The game's marker limit is respected. (The 0.6 page-only
+  including ones placed in the game. The last cell under the symbols is an eraser: with it picked,
+  a tap on any marker takes it away. The game's marker limit is respected. (The 0.6 page-only
   pins file is no longer read.)
 - **The game's own Equipment menu** (the Equipment button at the bottom left of the map). The
-  game's pause menu is rebuilt from its scene in the romfs and laid out the way Unity lays it out:
+  game's pause menu is rebuilt from its scene in the romfs and laid out the way Unity lays it out
+  for the game's 16:9 screen, then its panels are rearranged and scaled for the 4:3 page so the
+  text reads and the slots are big enough to tap (a tap just beside a small slot still reaches it):
   the tab bar, the equipped arcana card (with its gold leaf), the weapon's illustration, the
   relic slots and the picked relic's description, ATK / DEF / HP / MP, the heart and mana
   upgrades, level and experience bar, with the player's own items. Tap the weapon card for the
@@ -55,18 +62,26 @@ equipment and place the game's map markers.
   goes and tap the chosen slot again to take its relic off. Back (bottom left) returns to the
   equipment screen, the Map tab to the map. The change is made by the game's own
   `Inventory.EquipWeapon / EquipSpell / EquipCharmAtSlot / UnequipCharmAtSlot`, so stats and the
-  in-game menus follow, and a line at the bottom says what the game answered.
+  in-game menus follow, and a line at the bottom says what the game answered. Changes are made
+  only while the game is paused (its menu or pause screen open), as the game itself only changes
+  equipment from its paused menu; otherwise the line asks to pause the game first.
 - **Game over.** When the player dies the page darkens and a card with the game's death icon and
   ornament glows up and fades (`DeathResultComponent.hasJustDied`, set by
   `DeathManagementSystem` the moment of death).
 - **Pause.** While a menu or the pause screen is open (the game's ECS context paused by a game state
   that takes UI input), the map is blurred under "Paused".
-- **Before a save is loaded** (the game's own menus): one of the game's painted biome cards (the
+- **Title screen.** The page stays black through the logos and intro and shows the title art
+  once the game's title screen is up (the main menu's game state: it pauses the game and takes UI
+  input while no room is loaded; after 45 s without it the art shows anyway).
+  On it (the game's own menus): one of the game's painted biome cards (the
   save screen's `T_UI_Save_BiomeCards` atlas, one picked at random each session) over a blurred
   copy of itself, "Press A to confirm" at the bottom and the mod's version at the bottom right.
 - **Loading.** While the game loads a scene (its loading state on top for 0.4 s or more) or the
   map is not ready yet, the card of the current biome and "Loading, be patient" with its dots
-  running 1-2-3. The zoom and pin buttons show only over the map.
+  running 1-2-3, and a Castlevania fact (see *Loading facts*). The zoom and pin buttons show only
+  over the map.
+- **Frame glow.** A faint ember glow breathes along the gold of the map frame: two pictures drawn
+  once and faded in and out by the host, so it costs nothing per frame.
 - **Inventory page** (Debug → Inventory): what the module reads of the inventory, level and stats, the first step of the game-menu pages.
 - **Debug page.** The Debug button (or hold the area name): every step of the live memory chain
   and the map loader's log.
@@ -129,6 +144,35 @@ texture's alpha marks gold leaf). The menu's bundles are pinned in `native/bc_me
 The page is read in the background once a save is loaded (a few seconds) and each state is drawn
 on the asset worker (about 0.2-0.5 s); the tap targets come from the same layout.
 
+### Loading facts
+
+`native/bc_facts.h` holds 40 short facts about the Castlevania series and the history and legends
+it draws on. The texts are the mod's own, written from the sources below; nothing in them is
+taken from the game. A fact may name one of the game's items whose art fits it (an arcana's tarot
+card, a weapon's card, a relic); the module draws that art from the player's romfs at runtime in
+the frame the game's equipment screen gives it, beside the fact in the game's own equipment info
+box (`Menu::RenderFact`). A new fact is picked each time the loading page comes up, in a shuffled
+order, once the game's menu has been read (the module starts reading it at the title screen).
+
+Sources: Wikipedia articles [Castlevania: Belmont's Curse](https://en.wikipedia.org/wiki/Castlevania:_Belmont%27s_Curse),
+[Castlevania (1986)](https://en.wikipedia.org/wiki/Castlevania_(1986_video_game)),
+[Castlevania III: Dracula's Curse](https://en.wikipedia.org/wiki/Castlevania_III:_Dracula%27s_Curse),
+[Lament of Innocence](https://en.wikipedia.org/wiki/Castlevania:_Lament_of_Innocence),
+[Symphony of the Night](https://en.wikipedia.org/wiki/Castlevania:_Symphony_of_the_Night),
+[Rondo of Blood](https://en.wikipedia.org/wiki/Castlevania:_Rondo_of_Blood),
+[Curse of Darkness](https://en.wikipedia.org/wiki/Castlevania:_Curse_of_Darkness),
+[Alucard](https://en.wikipedia.org/wiki/Alucard_(Castlevania)),
+[Castlevania (TV series)](https://en.wikipedia.org/wiki/Castlevania_(TV_series)),
+[Castlevania: Nocturne](https://en.wikipedia.org/wiki/Castlevania:_Nocturne),
+[Sainte-Catherine-de-Fierbois](https://en.wikipedia.org/wiki/Sainte-Catherine-de-Fierbois),
+[Sainte-Chapelle](https://en.wikipedia.org/wiki/Sainte-Chapelle), [Talos](https://en.wikipedia.org/wiki/Talos),
+[Durendal](https://en.wikipedia.org/wiki/Durendal), [Excalibur](https://en.wikipedia.org/wiki/Excalibur);
+Giant Bomb on [Carmilla](https://giantbomb.com/wiki/Characters/Carmilla_8461) and
+[Brauner](https://giantbomb.com/wiki/Characters/Brauner); Game Informer,
+[Dark Metamorphosis: The Evolution of Castlevania's Main Monsters](https://gameinformer.com/b/features/archive/2011/08/08/dark-metamorphosis-the-evolution-of-castlevania-39-s-main-monsters);
+Bloody Disgusting, [Simon's Quest turns 30](https://bloody-disgusting.com/editorials/3455506/horrible-night-curse-castlevania-simons-quest-turns-30/);
+TheCollector, [10 Mythical Treasures of the Norse Gods](https://www.thecollector.com/treasures-norse-gods/).
+
 ### Live state (guest memory)
 
 All locations come from the game's own `global-metadata.dat` (IL2CPP v31) and `main` NSO:
@@ -152,7 +196,7 @@ All locations come from the game's own `global-metadata.dat` (IL2CPP v31) and `m
 | Map markers | `MapMarkersComponent._levelsMarkersData` `+0x28` (`Dictionary<LevelID, LevelMarkersData>`) → `markersData` `+0x18` → `MapMarkerData` (`position` `+0x14`, `markerTypeGuid` `+0x20`); the type guid is a `MapMarker_<Name>_ID` and its icon is `Map_MarkerSet_<Name>` |
 | Death spot | `DeathResultComponent.levelIdOfLastDeath` `+0x58`, `positionOfLastDeath` `+0x24` (`lastMainMapDeathPosition` `+0x30` when `lastDeathInFastTravelRoom` `+0x49`), shown like `LevelMapDeathSpotItem.Refresh` |
 
-The position is read twice per sample and taken only when both reads agree (the game writes it from another core). A jump of more than 12 units is shown only once it holds for 6 samples, a missing position keeps the last good one for 3 s, and a change of world must hold 10 samples, so a stray value never moves the map.
+The position is read twice per sample and taken only when both reads agree (the game writes it from another core). A move further than the player can go (3 units plus 45 units a second since the last good position) is shown only once the new place has held for 0.3 s and 4 samples, a missing position keeps the last good one for 3 s, and a change of world must hold 10 samples, so a stray value never moves the map.
 
 ### Guest helper (load plan)
 
@@ -194,6 +238,8 @@ cmake --build build
 ctest --test-dir build                                    # live reader against a fake guest
 build/bc_host_sim build/0100BA4026E94000.so <romfs> out   # drive the module through its C ABI
 build/bc_menu_tool <romfs> out/menu                       # draw the menu's four views from a romfs
+BC_FACTS=1 build/bc_menu_tool <romfs> out/menu            # ... or the loading page's fact cards
+build/bc_lm_tool <romfs>                                  # read every biome's level map, print the logs
 python3 tools/gen_manifest.py                             # regenerate package/dualscreen/manifest.json
 python3 tools/gen_load_plan.py                            # regenerate the guest helper's load plan
 ```
@@ -224,12 +270,15 @@ Package with `tools/build_dualscreen_package.py` (see the workflow for the exact
 
 - Z-doors whose target is fully completed show the "visited" icon, not the game's gold
   "completed" one, and districts are not tinted gold when completed (completion is not read yet).
-- Secret rooms stay hidden on the map even after they are found.
-- Names are the English ones.
+- Some areas may still not show as floor where the game's map shows them (being looked into:
+  a photo of the spot next to the game's map helps).
+- Names and the loading facts are in English (the game's font, as on the rest of the page).
 - The menu's Tarot, Journey and System tabs are not there yet (only Map and Equipment work).
   The arcanas' talents and tasks and the inventories' gamepad prompts are left out; button
   glyphs inside descriptions are dropped.
 - The guest helper (since 0.7.0) changes the game's state: keep a backup of your save while testing.
+- If the attack button ever stops working after an equipment change, open the game's own menu and
+  equip the weapon there once.
 
 ## Testing feedback
 

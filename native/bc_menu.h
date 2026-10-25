@@ -205,6 +205,27 @@ void Layout(Scene& scene, const bc_levelmap::Font& font, float cw, float ch);
 std::vector<std::uint8_t> Render(const Scene& scene, const bc_levelmap::Font& font, float scale, int w, int h,
                                  const std::vector<bool>* hide = nullptr);
 
+/// A part of a page drawn on its own: subtrees of the laid-out scene at their own scale and
+/// place (the game's 16:9 screen rearranged for another shape). A page pixel is
+/// (unit_x * k - ox, (ch - unit_y) * k - oy).
+struct Part {
+    std::vector<int> nodes;   // subtrees drawn, in order
+    std::vector<int> exclude; // subtrees left out of them
+    float k = 1, ox = 0, oy = 0;
+};
+/// The part's transform putting the rect `src` (units) at page pixels (x, y, w, h): scaled to fit
+/// (at most `k_max`), centred in the box (at its top with `top`).
+void Fit(Part& part, const Rect& src, float ch, float x, float y, float w, float h, float k_max = 1e9f,
+         bool top = false);
+/// What a subtree draws (active, not hidden, with an image or a text), as one rect in units;
+/// w = 0 when nothing.
+Rect Bounds(const Scene& scene, int node, const std::vector<bool>* hide);
+/// Draws the parts, in order, into a w x h page (`ch`: the layout's canvas height, units).
+std::vector<std::uint8_t> RenderParts(const Scene& scene, const bc_levelmap::Font& font, float ch, int w, int h,
+                                      const std::vector<Part>& parts, const std::vector<bool>* hide);
+/// A node's rect in page pixels as a part draws it.
+void PartRect(const Part& part, const Rect& r, float ch, float& x, float& y, float& w, float& h);
+
 /// A node's rect in pixels (x, y top-left, w, h) for a canvas drawn at `scale`, ch units tall.
 void PixelRect(const Rect& r, float scale, float ch, float& x, float& y, float& w, float& h);
 
