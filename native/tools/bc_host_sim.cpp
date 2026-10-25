@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
     for (const auto& [k, v] : sim.ints)
         std::printf("  %-18s %lld\n", k.c_str(), static_cast<long long>(v));
     for (const auto& [k, v] : sim.texts)
-        std::printf("  %-18s '%s'\n", k.c_str(), v.substr(0, 120).c_str());
+        std::printf("  %-18s '%s'\n", k.c_str(), v.substr(0, k == "bc.world.log" ? 4000 : 120).c_str());
 
     const auto sample_n = [&](int n) {
         for (int i = 0; i < n; ++i) {
@@ -342,7 +342,7 @@ int main(int argc, char** argv) {
                 static_cast<long long>(sim.ints["bc.title.img"]));
     save(sim.texts["bc.title.key"], "sim_title");
     save("module:bc:player:70", "sim_player70");
-    for (const char* k : {"frame", "zoom:0", "zoom:2", "btn:debug", "btn:map", "wait", "debug"})
+    for (const char* k : {"frame", "zoom:0", "zoom:2", "btn:debug", "btn:map", "wait", "debug", "menuart", "prompt", "version"})
         save(std::string("module:bc:ui:") + k, std::string("sim_ui_") + (k[0] == 'z' ? "zoom" + std::string(k + 5) : k[0] == 'b' ? std::string(k + 4) : std::string(k)));
     std::printf("zoom_set 1 accepted: %u\n", ext->on_action(inst, "zoom_set", 1));
     sample_n(2);
@@ -428,6 +428,31 @@ int main(int argc, char** argv) {
         save("module:bc:ui:prompt", "sim_ui3_prompt");
         save("module:bc:ui:version", "sim_ui3_version");
         save("module:bc:ui:menuart", "sim_ui4_menuart");
+    }
+    // Title and loading pages: the game's loading state on top (shown once it holds), the cards.
+    {
+        sample_n(2);
+        const auto flags = [&](const char* when) {
+            std::printf("%s: title=%lld load=%lld ingame=%lld art=%s lart=%s ltxt=%s\n", when,
+                        static_cast<long long>(sim.ints["bc.ui.title"]), static_cast<long long>(sim.ints["bc.ui.load"]),
+                        static_cast<long long>(sim.ints["bc.ui.ingame"]), sim.texts["bc.ui.art"].c_str(),
+                        sim.texts["bc.ui.lart"].c_str(), sim.texts["bc.ui.ltxt"].c_str());
+        };
+        flags("in game");
+        sim.guest.SetLoading(true);
+        sample_n(1);
+        flags("loading at once");
+        std::this_thread::sleep_for(std::chrono::milliseconds(450));
+        sample_n(1);
+        flags("loading held");
+        save(sim.texts["bc.ui.lart"], "sim_ui5_loadart");
+        for (int d = 1; d <= 3; ++d)
+            save("module:bc:ui:loadtxt:" + std::to_string(d), "sim_ui5_loadtxt" + std::to_string(d));
+        sim.guest.SetLoading(false);
+        sample_n(1);
+        flags("loaded");
+        for (int c = 0; c < 9; ++c)
+            save("module:bc:ui:menuart:" + std::to_string(c), "sim_ui5_card" + std::to_string(c));
     }
     save(sim.texts["bc.title.key"], "sim_main_title");
     ext->on_action(inst, "zoom", 0);
