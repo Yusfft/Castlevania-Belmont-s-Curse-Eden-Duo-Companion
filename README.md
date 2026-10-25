@@ -1,4 +1,4 @@
-# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.9.0)
+# Castlevania: Belmont's Curse – Eden Duo map companion (test build 0.9.2)
 
 A second-screen companion for [Eden Duo](https://github.com/igawa6/eden-duo) that shows the
 castle map of Castlevania: Belmont's Curse on the lower screen of a dual-screen Android
@@ -27,15 +27,14 @@ equipment and place the game's map markers.
   chest, sun, eye, cup, stick, coin, sword, moon) and the red skull where you last died, with
   the game's own icons, on the map they belong to.
 - **Player marker.** The game's gold star, at the player's exact position every frame. The map
-  slides under it; a new section is drawn in the background when needed, and the page switches
-  to it only once it is drawn (the host would otherwise show the old section at the new place for
-  a moment).
+  slides under it; a new section is drawn in the background when needed (shown under the
+  current one, so the host asks for it), and the page switches to it only once it is drawn (the
+  host would otherwise show the old section at the new place for a moment).
 - **Drag the map.** Drag a finger over the map to look around; the player button (above Debug)
   brings the view back, and it glides back by itself after 8 s without a drag.
 - **Area title.** The biome and district names in the game's own font (English).
 - **Rooms in the map's vivid palette**, the one the game uses under its map cursor.
-- **The game's map-screen interface.** The map screen's frame (darkened, so it does not draw the
-  eye), the level banner in the level's colour, the zoom scale and buttons, all from the game's
+- **The game's map-screen interface.** The map fills the whole page (no frame since 0.9.2); the level banner in the level's colour, the zoom scale and buttons, all from the game's
   own art, with text in the game's font.
 - **Zoom.** Three follow views (Far, Near, Close: 8, 13 and 20 pixels per world unit). The small
   zoom button shows the level; tap it for the next level out (wrapping to the closest), hold it
@@ -44,15 +43,16 @@ equipment and place the game's map markers.
 - **Pins are the game's own map markers.** The Pin button opens three symbols (cross, chest,
   eye; the game's marker art) under it; with one picked, a tap on the map places that marker in
   the game itself (`MapMarkersComponent.AddMarker`), in the navigation zone under the tap, so it
-  shows on the game's map screen and is kept in the save. Tapping a marker with another symbol
-  picked changes it, with the same symbol removes it; this works on any marker on the map,
-  including ones placed in the game. The last cell under the symbols is an eraser: with it picked,
-  a tap on any marker takes it away. The game's marker limit is respected. (The 0.6 page-only
-  pins file is no longer read.)
+  shows on the game's map screen and is kept in the save. A tap on a marker takes it away, with
+  the Pin button on or off; this works on any marker on the map, including ones placed in the
+  game. The game's marker limit is respected. (The 0.6 page-only pins file is no longer read.)
 - **The game's own Equipment menu** (the Equipment button at the bottom left of the map). The
   game's pause menu is rebuilt from its scene in the romfs and laid out the way Unity lays it out
   for the game's 16:9 screen, then its panels are rearranged and scaled for the 4:3 page so the
-  text reads and the slots are big enough to tap (a tap just beside a small slot still reaches it):
+  text reads and the slots are big enough to tap (a tap just beside a small slot still reaches it).
+  The game's tab bar is left out (its Tarot, Journey and System tabs are not on this page); the page
+  has a Map and an Equipment tab at the bottom left, where and as the map page has them, and Back
+  (in an inventory) at the bottom right:
   the tab bar, the equipped arcana card (with its gold leaf), the weapon's illustration, the
   relic slots and the picked relic's description, ATK / DEF / HP / MP, the heart and mana
   upgrades, level and experience bar, with the player's own items. Tap the weapon card for the
@@ -62,9 +62,10 @@ equipment and place the game's map markers.
   goes and tap the chosen slot again to take its relic off. Back (bottom left) returns to the
   equipment screen, the Map tab to the map. The change is made by the game's own
   `Inventory.EquipWeapon / EquipSpell / EquipCharmAtSlot / UnequipCharmAtSlot`, so stats and the
-  in-game menus follow, and a line at the bottom says what the game answered. Changes are made
-  only while the game is paused (its menu or pause screen open), as the game itself only changes
-  equipment from its paused menu; otherwise the line asks to pause the game first.
+  in-game menus follow, and a line at the top says what the game answered. Changes can be made
+  any time (the game need not be paused). A weapon is equipped a second time 1.2 s later (the
+  game unequips and equips it again), once the assets its first equip asked for have loaded:
+  some weapons (the Burnt Sword of Fierbois) were left without an attack otherwise.
 - **Game over.** When the player dies the page darkens and a card with the game's death icon and
   ornament glows up and fades (`DeathResultComponent.hasJustDied`, set by
   `DeathManagementSystem` the moment of death).
@@ -80,8 +81,9 @@ equipment and place the game's map markers.
   map is not ready yet, the card of the current biome and "Loading, be patient" with its dots
   running 1-2-3, and a Castlevania fact (see *Loading facts*). The zoom and pin buttons show only
   over the map.
-- **Frame glow.** A faint ember glow breathes along the gold of the map frame: two pictures drawn
-  once and faded in and out by the host, so it costs nothing per frame.
+- **Edge glow.** A faint ember glow breathes along the page's edges (the shape of the map
+  screen's gold frame): two pictures drawn once and faded in and out by the host, so it costs
+  nothing per frame.
 - **Inventory page** (Debug → Inventory): what the module reads of the inventory, level and stats, the first step of the game-menu pages.
 - **Debug page.** The Debug button (or hold the area name): every step of the live memory chain
   and the map loader's log.
@@ -273,7 +275,7 @@ Package with `tools/build_dualscreen_package.py` (see the workflow for the exact
 - Some areas may still not show as floor where the game's map shows them (being looked into:
   a photo of the spot next to the game's map helps).
 - Names and the loading facts are in English (the game's font, as on the rest of the page).
-- The menu's Tarot, Journey and System tabs are not there yet (only Map and Equipment work).
+- The menu's Tarot, Journey and System pages are not there (the page has Map and Equipment).
   The arcanas' talents and tasks and the inventories' gamepad prompts are left out; button
   glyphs inside descriptions are dropped.
 - The guest helper (since 0.7.0) changes the game's state: keep a backup of your save while testing.

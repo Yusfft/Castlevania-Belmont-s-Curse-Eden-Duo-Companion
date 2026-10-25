@@ -27,7 +27,7 @@ ZBTN_W, ZBTN_H = 230, 64      # kZoomButtonW / kZoomButtonH
 ZBTN_X, ZBTN_Y = 40, H - ZBTN_H - 30
 PIN_CELL = 84                 # kPinCell
 PIN_TYPES = 3                 # kPinTypes
-PIN_TOOLS = PIN_TYPES + 1      # kPinTools (the eraser last)
+PIN_TOOLS = PIN_TYPES          # kPinTools
 BTN_W, BTN_H = 170, 56        # kButtonW / kButtonH
 LABEL_W, LABEL_H = 700, 70    # kLabelW / kLabelH
 PIN_X, PIN_Y = W - BTN_W - 40, 30
@@ -94,9 +94,8 @@ map_page = {
          "x_bind": "bc.map.pox", "y_bind": "bc.map.poy", "need_bind": "bc.map.pshow"},
         {"type": "image", "rect": [0, 0, 2048, 1536], "src_bind": "bc.map.key",
          "x_bind": "bc.map.ox", "y_bind": "bc.map.oy", "need_bind": "bc.map.show"},
-        # The next window, asked for (the host draws a picture only once a widget shows it) in
-        # one pixel under the frame's corner; the page switches to it once it is drawn.
-        {"type": "image", "rect": [2, 2, 1, 1], "src_bind": "bc.map.req", "need_bind": "bc.map.reqshow"},
+        # A tap on one of the game's markers on the map takes it away (pin mode has its own layer).
+        rect([0, 0, W, H], "#00000000", on_tap="act_map_tap", payload="$tap", need_bind="bc.ui.ingame"),
         # The game's player marker, centred: the map moves under it.
         *[marker(b, sz) for b, sz in MARKER.items()],
         # Pause (a menu or the pause screen open in the game): the map blurred under "Paused".
@@ -134,10 +133,9 @@ map_page = {
          **fade("bc.ui.fact", 400)},
         {"type": "image", "rect": [(W - LOAD_W) // 2, H - LOAD_H - 14, LOAD_W, LOAD_H], "src_bind": "bc.ui.ltxt",
          **fade("bc.ui.load1", 300)},
-        # The map screen's gold-edged frame (game art, drawn by the module), and an ember glow on
-        # its gold that breathes: two glow pictures faded in and out on their own beats by the
-        # host (no redraw from the module).
-        {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:frame", "need_bind": "bc.ui.ok"},
+        # No frame: the map fills the page. An ember glow along the page's edges (the shape of the
+        # map screen's gold frame) breathes: two glow pictures faded in and out on their own beats
+        # by the host (no redraw from the module).
         {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:glow:0", **fade("bc.ui.glow0", 1400)},
         {"type": "image", "rect": [0, 0, W, H], "src": "module:bc:ui:glow:1", **fade("bc.ui.glow1", 900)},
         # Before the game's title screen (logos, intro): black.
@@ -280,17 +278,24 @@ inv_widgets += [
 # Arcanas inventories), drawn by the module from the game's menu scene with what the player
 # wears and owns. One full-page picture (the one before it under it while a new one is drawn);
 # taps go to the module, which looks up what is under them in that picture.
-MENU_MAP_TAB = [8, 15, 242, 68]  # where the menu's Map tab lands on this page (bc_menupage)
+# The two page tabs, where and as the map page has them: Equipment beside the zoom button, Map
+# in the zoom button's place.
+TAB_Y = H - TAB_H - 30
+MAP_TAB = [ZBTN_X, TAB_Y, TAB_W, TAB_H]
+EQ_TAB = [ZBTN_X + ZBTN_W + 20, TAB_Y, TAB_W, TAB_H]
+BACK_BTN = [W - BTN_W - 40, H - BTN_H - 34, BTN_W, BTN_H]  # where Debug is on the map page
 eq_widgets = [
     rect([0, 0, W, H], "#FF000000"),
     {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.menu.pkey", "need_bind": "bc.menu.ok"},
     {"type": "image", "rect": [0, 0, W, H], "src_bind": "bc.menu.key", "need_bind": "bc.menu.ok"},
     rect([0, 0, W, H], "#00000000", on_tap="act_menu_tap", payload="$tap", need_bind="bc.menu.ok"),
-    tap(MENU_MAP_TAB, "act_map") | {"need_bind": "bc.menu.tabs"},
-    # Out of an inventory (the game's B button), at the bottom left where the inventories are bare.
-    {"type": "image", "rect": [40, H - BTN_H - 24, BTN_W, BTN_H], "src": "module:bc:ui:btn:back",
-     "need_bind": "bc.menu.back"},
-    tap([40, H - BTN_H - 24, BTN_W, BTN_H], "act_menu_back") | {"need_bind": "bc.menu.back"},
+    {"type": "image", "rect": MAP_TAB, "src": "module:bc:ui:tab:map:0", "need_bind": "bc.ui.ok"},
+    tap(MAP_TAB, "act_map"),
+    {"type": "image", "rect": EQ_TAB, "src": "module:bc:ui:tab:eq:1", "need_bind": "bc.ui.ok"},
+    tap(EQ_TAB, "act_menu_back"),
+    # Out of an inventory (the game's B button).
+    {"type": "image", "rect": BACK_BTN, "src": "module:bc:ui:btn:back", "need_bind": "bc.menu.back"},
+    tap(BACK_BTN, "act_menu_back") | {"need_bind": "bc.menu.back"},
     # Until the menu is read (or without a save): a line, and the way back to the map.
     {"type": "image", "rect": [(W - LABEL_W) // 2, (H - LABEL_H) // 2, LABEL_W, LABEL_H],
      "src": "module:bc:ui:menuwait", "need_bind": "bc.menu.wait"},
@@ -298,10 +303,9 @@ eq_widgets = [
      "src": "module:bc:ui:menunone", "need_bind": "bc.menu.none"},
     {"type": "image", "rect": [(W - LABEL_W) // 2, (H - LABEL_H) // 2, LABEL_W, LABEL_H],
      "src": "module:bc:ui:menufail", "need_bind": "bc.menu.fail"},
-    {"type": "image", "rect": [40, 26, BTN_W, BTN_H], "src": "module:bc:ui:btn:map", "need_bind": "bc.menu.plain"},
-    tap([40, 26, BTN_W, BTN_H], "act_map") | {"need_bind": "bc.menu.plain"},
-    # The game's answer to a change, in the band every view leaves free above the stats.
-    {"type": "image", "rect": [(W - EQ_MSG_W) // 2, H - EQ_MSG_H - 6, EQ_MSG_W, EQ_MSG_H], "src_bind": "bc.eq.msg",
+    button(40, "MAP", "act_map", y=H - 90, w=220, h=70) | {"need_bind": "bc.ui.plain"},
+    # The game's answer to a change, at the top.
+    {"type": "image", "rect": [(W - EQ_MSG_W) // 2, 8, EQ_MSG_W, EQ_MSG_H], "src_bind": "bc.eq.msg",
      **fade("bc.eq.msgshow", 200)},
 ]
 
@@ -337,6 +341,7 @@ manifest = {
         "act_pin_mode": {"kind": "module", "action": "pin_mode", "argument": 0},
         **{"act_pin_type%d" % k: {"kind": "module", "action": "pin_type", "argument": k} for k in range(PIN_TOOLS)},
         "act_map_pan": {"kind": "module", "action": "map_pan", "argument": "$payload"},
+        "act_map_tap": {"kind": "module", "action": "map_tap", "argument": "$payload"},
         "act_map_home": {"kind": "module", "action": "map_home", "argument": 0},
         "act_pin_tap": {"kind": "module", "action": "pin_tap", "argument": "$payload"},
         "act_debug": {"kind": "page", "page": "debug", "transition": "fade", "duration_ms": 150},

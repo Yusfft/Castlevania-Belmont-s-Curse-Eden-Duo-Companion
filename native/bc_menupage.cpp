@@ -753,35 +753,35 @@ std::vector<bc_menu::Part> Menu::Compose(Scene& sc, const Snapshot& s, int w, in
         const int root = F("EquipmentView");
         cover(F("TabsContent_Group/Background"));
         cover(F("OverlayDark", root));
-        const int tabs = F("TabsButtons_ToggleGroup");
-        place({tabs}, bounds(tabs), 8, 2, 1224, 84);
+        // (The game's tab bar is left out: the page has its own Map and Equipment tabs at the
+        // bottom, where the map page has them; the bottom 100 px stay free for them.)
         // The section ribbon across the page, the titles over their parts.
         if (const int banner = F("Header/Banner_Background", root); banner >= 0) {
             Node& b = sc.nodes[static_cast<std::size_t>(banner)];
             const float k = 56.0f * fy / std::max(b.rect.h, 1.0f);
             b.rect.w = (static_cast<float>(w) + 60.0f) / k;
-            place({banner}, b.rect, -30, 88, 1300, 56);
+            place({banner}, b.rect, -30, 6, 1300, 56);
         }
         const int arcana = F("Arcana", root), weapon = F("Weapon", root);
         const Rect cards_fit = Union(bounds(arcana), bounds(weapon));
-        const Part cards = place({F("CardSupport", root), arcana, weapon}, cards_fit, 0, 146, 660, 466);
+        const Part cards = place({F("CardSupport", root), arcana, weapon}, cards_fit, 0, 66, 660, 456);
         const int slots = F("Charms/BringToFrontWrapper", root);
-        const Part relics = place({slots}, bounds(slots), 668, 186, 560, 280);
+        const Part relics = place({slots}, bounds(slots), 668, 104, 560, 280);
         const auto title = [&](const char* name, const Part& over, const Rect& r) {
             const int t = F(name, root);
             if (t < 0)
                 return;
             float x, y, bw, bh;
             box(over, r, x, y, bw, bh);
-            place({t}, bounds(t), (x + bw / 2) / fx - 180, 90, 360, 52, 0.62f);
+            place({t}, bounds(t), (x + bw / 2) / fx - 180, 8, 360, 52, 0.62f);
         };
         title("Header/ArcanaInventoryTitle", cards, bounds(arcana));
         title("Header/WeaponInventoryTitle", cards, bounds(weapon));
         title("Header/CharmsInventoryTitle", relics, bounds(slots));
         const int info = F("Charms/Charms_PreviewBox", root);
-        place({info}, bounds(info), 20, 604, 1200, 276, 0.66f);
+        place({info}, bounds(info), 20, 528, 1200, 268, 0.66f);
         const int stats = F("StatSummary", root);
-        place({stats}, bounds(stats), 20, 884, 1200, 136);
+        place({stats}, bounds(stats), 20, 800, 1200, 140);
     } else if (s.view == 1) {
         const int ov = F("Overlay_WeaponInventory");
         cover(F("CommonUI_DarkOverlay", ov));
@@ -789,7 +789,7 @@ std::vector<bc_menu::Part> Menu::Compose(Scene& sc, const Snapshot& s, int w, in
         const int grid = F("InventoryGroup", ov);
         place({F("ParchmentSupport", ov), grid}, bounds(grid), 6, 116, 640, 870, 1e9f, {}, true);
         const int info = F("WeaponCard_Info", ov);
-        place({info}, bounds(info), 652, 122, 582, 880);
+        place({info}, bounds(info), 652, 122, 582, 850, 1e9f, {}, true);
         header(F("Header", ov), "InventoryTitle", 118);
     } else if (s.view == 2) {
         const int ov = F("Overlay_CharmsInventory");
@@ -799,7 +799,7 @@ std::vector<bc_menu::Part> Menu::Compose(Scene& sc, const Snapshot& s, int w, in
         // The card of the relic inspected, else of the one in the slot picked.
         const int card = F(s.inspect.empty() ? "Equipped_PreviewCard" : "Selected_PreviewCard", ov);
         const int info = F("CharmCard_Info", card);
-        place({card}, bounds(info), 708, 100, 526, 900, 1e9f, {F("CardSupport", card)}, true);
+        place({card}, bounds(info), 708, 100, 526, 860, 1e9f, {F("CardSupport", card)}, true);
         header(F("Header", ov), "InventoryTitle", 120);
     } else if (s.view == 3) {
         const int ov = F("Overlay_SpellInventory");
@@ -828,12 +828,12 @@ std::vector<bc_menu::Part> Menu::Compose(Scene& sc, const Snapshot& s, int w, in
                   pitch, 112, 0.85f);
         }
         const int card = F("ArcanaCard_Display_Anim", ov);
-        place({card}, bounds(card), 10, 356, 340, 650, 1e9f, {}, true);
+        place({card}, bounds(card), 10, 356, 340, 600, 1e9f, {}, true);
         const int spell = F("Spell_Anim", ov);
         const int preview = F("Spell_PreviewBox_Anim", spell), gems = F("SpellTalentGem_Support_Mask", spell);
         const Rect icon = Union(Union(bounds(F("SpellSlot", spell)), bounds(F("Spell", spell))), bounds(F("EquippedText", spell)));
         place({spell}, icon, 360, 352, 870, 250, 0.62f, {preview, gems});
-        place({preview}, bounds(preview), 360, 610, 870, 398, 1e9f, {}, true);
+        place({preview}, bounds(preview), 360, 604, 870, 366, 1e9f, {}, true);
     }
     return parts;
 }
@@ -887,14 +887,12 @@ std::vector<std::uint8_t> Menu::RenderFact(const std::string& title, const std::
     const int box = sc.Path("Charms/Charms_PreviewBox", root);
     if (box < 0)
         return {};
-    // The box shows the fact; it grows with the text (about 46 characters a line).
+    // The box shows the fact.
     for (int n = box; n >= 0; n = sc.nodes[static_cast<std::size_t>(n)].parent)
         sc.nodes[static_cast<std::size_t>(n)].active = true;
     const int name = sc.Find("ItemName", box), desc = sc.Find("ItemDescription", box);
     SetText(sc, name, title);
     SetText(sc, desc, text);
-    const float lines = std::ceil(static_cast<float>(text.size()) / 46.0f);
-    sc.nodes[static_cast<std::size_t>(box)].size[1] += std::max(0.0f, lines * 62.0f + 30.0f - 277.0f);
     bc_menu::Layout(sc, *font_, 3840, 2160);
     const std::vector<bool> hide = Hidden(sc);
     std::vector<bc_menu::Part> parts;
@@ -942,9 +940,42 @@ std::vector<std::uint8_t> Menu::RenderFact(const std::string& title, const std::
             text_x = cw + fw * 0.03f;
         }
     }
-    const Rect bb = bc_menu::Bounds(sc, box, &hide);
-    if (bb.w <= 0)
+    // The box takes the shape of the room left (so it fills it), laid out again at that size;
+    // the title and the text then go inside its frame, the text shrinking (as the game's
+    // auto-sized texts do) until it fits.
+    {
+        // (Its height is set by the layout: the drawn rect is changed instead; the frame is
+        // a sliced sprite, so its corners keep their shape.)
+        // The frame is the info node's image (T_UI_Equipment_CharmDescriptionBox).
+        const int info = sc.Find("Info", box);
+        Node& b = sc.nodes[static_cast<std::size_t>(info >= 0 ? info : box)];
+        const float nh = b.rect.w * fh / std::max(fw - text_x, 1.0f);
+        b.rect.y -= (nh - b.rect.h) / 2;
+        b.rect.h = nh;
+    }
+    const int info_node = sc.Find("Info", box);
+    const Rect bb = sc.nodes[static_cast<std::size_t>(info_node >= 0 ? info_node : box)].rect;
+    if (bb.w <= 0 || bb.h <= 0)
         return {};
+    const float padx = bb.w * 0.13f, pady = 70.0f, name_h = 88.0f;
+    if (name >= 0) {
+        Node& n = sc.nodes[static_cast<std::size_t>(name)];
+        n.rect = Rect{bb.x + padx, bb.y + bb.h - pady - name_h, bb.w - 2 * padx, name_h};
+        for (auto& t : n.texts)
+            t.autosize = true, t.size_max = t.size * 0.9f, t.size_min = t.size * 0.5f, t.wrap = false;
+    }
+    if (desc >= 0) {
+        Node& n = sc.nodes[static_cast<std::size_t>(desc)];
+        const float top = bb.y + bb.h - pady - name_h - 12;
+        const float bottom = bb.y + pady + 70; // clear of the frame's lower edge and its corners
+        n.rect = Rect{bb.x + padx, bottom, bb.w - 2 * padx, std::max(10.0f, top - bottom)};
+        for (auto& t : n.texts) {
+            t.autosize = true, t.size_max = t.size * 1.1f, t.size_min = t.size * 0.5f, t.wrap = true;
+            t.valign = 512; // middle
+            for (float& m : t.margin)
+                m = 0;
+        }
+    }
     place({box}, bb, text_x, 0, fw - text_x, fh);
     return bc_menu::RenderParts(sc, *font_, 2160, w, h, parts, &hide);
 }

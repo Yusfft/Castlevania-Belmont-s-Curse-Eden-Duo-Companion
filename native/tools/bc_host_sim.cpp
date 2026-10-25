@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -368,16 +369,23 @@ int main(int argc, char** argv) {
 
     // Like the host: the next map window the page asks for is drawn (then the page shows it).
     int windows_drawn = 0;
+    std::set<std::string> host_images;
     const auto sample_n = [&](int n) {
         for (int i = 0; i < n; ++i) {
             sim.ints.clear();
             sim.texts.clear();
             api->sample(inst, &host);
             helper.Frame(sim.guest);
-            if (sim.ints["bc.map.reqshow"] && !sim.texts["bc.map.req"].empty()) {
-                Png none;
-                ext->load_image(inst, &host, sim.texts["bc.map.req"].c_str(), &none, Sink);
-                ++windows_drawn;
+            // The host draws the map widgets on the page: their pictures are asked for once.
+            for (const auto& [show, key] : {std::pair<const char*, const char*>{"bc.map.show", "bc.map.key"},
+                                           {"bc.map.pshow", "bc.map.pkey"}}) {
+                const std::string k = sim.texts[key];
+                if (sim.ints[show] && !k.empty() && !host_images.count(k)) {
+                    Png none;
+                    if (ext->load_image(inst, &host, k.c_str(), &none, Sink))
+                        host_images.insert(k);
+                    ++windows_drawn;
+                }
             }
         }
     };
@@ -523,6 +531,14 @@ int main(int argc, char** argv) {
         show("back");
         tap(526, 360, "weapon card");
         show("armoury");
+        tap(138, 169, "Longsword");
+        show("longsword inspected");
+        tap(138, 169, "Longsword again");
+        helper_log("equip the longsword");
+        sample_paced(40);
+        std::printf("weapon now %d\n", sim.guest.Get<std::uint64_t>(sim.guest.inv_ + 0x28) == sim.guest.items_[0]);
+        sample_paced(60);
+        helper_log("1.6 s later: equipped once more");
         ext->on_action(inst, "menu_back", 0);
         show("equipment");
         tap(946, 290, "relic slot 2");
@@ -557,11 +573,11 @@ int main(int argc, char** argv) {
     {
         sample_n(2);
         const auto st = [&](const char* when) {
-            std::printf("%s: ox=%lld oy=%lld mk=%lld,%lld home=%lld show=%lld req=%lld key=%s\n", when,
+            std::printf("%s: ox=%lld oy=%lld mk=%lld,%lld home=%lld show=%lld pshow=%lld key=%s\n", when,
                         static_cast<long long>(sim.ints["bc.map.ox"]), static_cast<long long>(sim.ints["bc.map.oy"]),
                         static_cast<long long>(sim.ints["bc.mk.dx"]), static_cast<long long>(sim.ints["bc.mk.dy"]),
                         static_cast<long long>(sim.ints["bc.pan.home"]), static_cast<long long>(sim.ints["bc.map.show"]),
-                        static_cast<long long>(sim.ints["bc.map.reqshow"]), sim.texts["bc.map.key"].c_str());
+                        static_cast<long long>(sim.ints["bc.map.pshow"]), sim.texts["bc.map.key"].c_str());
         };
         st("before drag");
         const auto drag = [&](int dx, int dy) {
@@ -600,19 +616,26 @@ int main(int argc, char** argv) {
             std::printf("tap %d,%d accepted %u: ", x, y, ok);
             helper_log(what);
         };
-        tap(px + 3, py - 2, "eye on the cross: change");
+        tap(px + 3, py - 2, "on the cross: remove");
         tap(px + 300, py, "eye on empty map: add");
         ext->on_action(inst, "pin_type", 0);
         tap(px, py, "cross on the cross: remove");
-        ext->on_action(inst, "pin_type", 3);
+        ext->on_action(inst, "pin_mode", 0); // off: a tap on a marker still takes it away
         sample_n(2);
-        std::printf("eraser: hint %s k3 %s\n", sim.texts["bc.pin.hint"].c_str(), sim.texts["bc.pin.k3"].c_str());
-        tap(px - 480 + 15, py + 240 - 10, "eraser near the chest: remove");
-        tap(px - 400, py - 300, "eraser on nothing: refused");
-        ext->on_action(inst, "pin_type", 0);
+        {
+            const auto mtap = [&](int x, int y, const char* what) {
+                const long long packed = (static_cast<long long>(x) << 32) | static_cast<unsigned>(y);
+                const auto ok = ext->on_action(inst, "map_tap", packed);
+                std::printf("map tap %d,%d accepted %u: ", x, y, ok);
+                helper_log(what);
+            };
+            mtap(px - 480 + 15, py + 240 - 10, "near the chest, pin mode off: remove");
+            mtap(px - 400, py - 300, "on nothing: nothing");
+        }
+        ext->on_action(inst, "pin_mode", 0);
         save(sim.texts["bc.map.key"], "sim_pins_close");
-        for (const char* k : {"zbtn:2", "zbtn:0", "zoom:2", "btn:pin:0", "btn:pin:1", "pin:0:0", "pin:2:1", "pin:3:0",
-                             "pin:3:1", "pinhint:0", "pinhint:1", "home"})
+        for (const char* k : {"zbtn:2", "zbtn:0", "zoom:2", "btn:pin:0", "btn:pin:1", "pin:0:0", "pin:2:1",
+                             "pinhint:0", "home", "tab:map:0", "tab:eq:1"})
             {
                 std::string n = k;
                 for (char& c : n)

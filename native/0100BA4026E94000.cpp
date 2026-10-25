@@ -62,7 +62,7 @@ using namespace dsmod_sdk::int_types;
 constexpr u64 kTitleId = 0x0100BA4026E94000ULL;
 constexpr char kBuildHex[] = "0F1169AA7D0FA4529C861F96ADEC306E"
                              "00000000000000000000000000000000";
-constexpr const char* kVersion = "0.9.0";
+constexpr const char* kVersion = "0.9.2";
 
 // Canvas and images (must match manifest.json).
 constexpr int kCanvasW = 1240;
@@ -88,10 +88,8 @@ constexpr int kPinCell = 84;
 // game): three of its marker symbols are offered. A tap this close to a marker touches it.
 constexpr const char* kPinSprites[] = {"Map_MarkerSet_Cross", "Map_MarkerSet_Chest", "Map_MarkerSet_Eye"};
 constexpr int kPinTypes = 3;
-// After the symbols, the eraser: a tap on a marker with it takes the marker away.
-constexpr int kPinEraser = kPinTypes;
-constexpr int kPinTools = kPinTypes + 1;
-constexpr double kPinTouchPx = 40.0, kPinEraserPx = 64.0;
+constexpr int kPinTools = kPinTypes;
+constexpr double kPinTouchPx = 52.0; // a tap this close to a marker takes it away
 // Dragging the map moves the view off the player; it glides back after kPanIdleSeconds without
 // a drag (or at once with the player button).
 constexpr double kPanIdleSeconds = 8.0;
@@ -301,6 +299,7 @@ struct HelperRequest {
     float x = 0, y = 0;
     std::string done_msg; // shown on the equipment page when it is done ("" = none)
     int retries = 0;
+    bool refresh = false; // the weapon equipped again (see Instance::wref_at)
 };
 enum : u32 {
     kCmdEquipWeapon = 1, kCmdEquipSpell, kCmdEquipCharm, kCmdUnequipCharm,
@@ -381,6 +380,12 @@ struct Instance {
     std::string h_status = "-";
     bool force_slow = false;     // read inventory and markers on the next sample
     bool await_markers = false;  // redraw the map once the changed markers are read
+    // A weapon equipped from the page is equipped once more a moment later (the game unequips
+    // and equips it again), once the assets its first equip asked for have loaded: its attack
+    // and attachment are then set up from loaded assets (some weapons were left without an attack).
+    HelperRequest wref;
+    std::chrono::steady_clock::time_point wref_at{};
+    bool wref_due = false;
     // The answer to the last equipment change, shown for a few seconds (tick thread).
     std::string eq_msg;
     std::chrono::steady_clock::time_point eq_msg_at{};
@@ -1004,7 +1009,7 @@ void PublishPins(Instance* inst, const EdenDsmodHostApi* h) {
         PublishT(h, name, key);
     }
     PublishT(h, "bc.pin.btn", inst->pin_mode ? "module:bc:ui:btn:pin:1" : "module:bc:ui:btn:pin:0");
-    PublishT(h, "bc.pin.hint", inst->pin_type == kPinEraser ? "module:bc:ui:pinhint:1" : "module:bc:ui:pinhint:0");
+    PublishT(h, "bc.pin.hint", "module:bc:ui:pinhint:0");
     PublishI(h, "bc.pin.n", static_cast<s64>(inst->live.markers.size()));
 }
 
@@ -1081,6 +1086,14 @@ void HelperStep(Instance* inst, const bc_live::Memory& mem) {
             if (result == 0) {
                 if (!r.done_msg.empty())
                     EquipMessage(inst, r.done_msg);
+                if (r.cmd == kCmdEquipWeapon && !r.refresh) {
+                    inst->wref = r;
+                    inst->wref.refresh = true;
+                    inst->wref.done_msg.clear();
+                    inst->wref.retries = 0;
+                    inst->wref_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+                    inst->wref_due = true;
+                }
             } else {
                 EquipMessage(inst, HelperError(result));
             }
@@ -1089,6 +1102,12 @@ void HelperStep(Instance* inst, const bc_live::Memory& mem) {
             EquipMessage(inst, "The game did not answer");
         }
         return;
+    }
+    if (inst->wref_due && inst->hq.empty() && std::chrono::steady_clock::now() >= inst->wref_at) {
+        inst->wref_due = false;
+        // Only while that weapon is still the one equipped.
+        if (inst->live.inv.ok && inst->live.inv.weapon.ptr == inst->wref.o1)
+            inst->hq.push_back(inst->wref);
     }
     if (inst->hq.empty())
         return;
@@ -1242,11 +1261,8 @@ std::string MenuItemName(Instance* inst, const std::string& id) {
 /// The game changes equipment only from its pause menu: a weapon swapped while the player acts
 /// (its attachment rebuilt between the game's systems) can leave the attack button dead. The
 /// page does the same: changes wait for the game to be paused.
-bool EquipAllowed(Instance* inst) {
-    if (inst->live.paused)
-        return true;
-    EquipMessage(inst, "Pause the game to change equipment");
-    return false;
+bool EquipAllowed(Instance*) {
+    return true; // any time, as before 0.9.0 (the game need not be paused)
 }
 
 bool MenuEquip(Instance* inst, const std::string& id, int slot) {
@@ -1818,15 +1834,16 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
                 PublishT(h, "bc.map.key", top.key);
                 PublishI(h, "bc.map.ox", std::lround(ox));
                 PublishI(h, "bc.map.oy", std::lround(oy));
-                // The one before under it (drawn, at its own place: it fills the edges while the
-                // view moves), and the wanted one asked for in a corner pixel under the frame.
+                // Under it: the wanted window while it is not drawn yet (the host asks the module
+                // for a picture only when a widget on the page shows it; the one on top covers
+                // it), else the one before (it fills the edges while the view moves).
                 const Window* under = nullptr;
-                if (inst->prev.valid && inst->prev.biome == number && inst->prev.zoom == top.zoom &&
-                    inst->prev.legacy == top.legacy && inst->prev.key != top.key)
+                if (cur.key != top.key)
+                    under = &cur;
+                else if (inst->prev.valid && inst->prev.biome == number && inst->prev.zoom == top.zoom &&
+                         inst->prev.legacy == top.legacy && inst->prev.key != top.key)
                     under = &inst->prev;
-                PublishI(h, "bc.map.show", shown_ok);
-                PublishT(h, "bc.map.req", cur.key);
-                PublishI(h, "bc.map.reqshow", cur.key != top.key);
+                PublishI(h, "bc.map.show", 1);
                 if (under) {
                     double pox, poy;
                     offset(*under, pox, poy);
@@ -1845,7 +1862,6 @@ void Sample(void* p, const EdenDsmodHostApi* h) {
         if (!follow) {
             PublishI(h, "bc.map.pshow", 0);
             PublishI(h, "bc.map.show", 0);
-            PublishI(h, "bc.map.reqshow", 0);
         }
         PublishI(h, "bc.pan.home", follow && panned);
         if (!follow) {
@@ -2047,7 +2063,7 @@ std::string PinGuid(Instance* inst, int type) {
 /// bits). Near a marker of the game: another symbol changes it, the same symbol takes it away.
 /// Elsewhere: a new marker of the selected symbol. All through the game's own marker functions
 /// (the guest helper), so the game's map shows them and the game saves them.
-bool PinTap(Instance* inst, int64_t packed) {
+bool PinTap(Instance* inst, int64_t packed, bool remove_only) {
     const double cx = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(packed) >> 32));
     const double cy = static_cast<double>(static_cast<std::int32_t>(static_cast<u64>(packed) & 0xFFFFFFFFu));
     const auto& s = inst->live;
@@ -2056,23 +2072,20 @@ bool PinTap(Instance* inst, int64_t packed) {
         std::lock_guard lock(inst->pin_mutex);
         tool = inst->pin_type;
     }
-    const bool eraser = tool == kPinEraser;
-    const std::string guid = eraser ? std::string() : PinGuid(inst, tool);
+    const std::string guid = PinGuid(inst, tool);
     std::lock_guard lock(inst->pin_mutex);
     const auto lm = inst->tap_lm;
-    if (!inst->pin_mode || !inst->tap_view_ok || inst->tap_biome < 0 || !lm || (guid.empty() && !eraser) ||
-        !s.markers_ok || !s.markers_comp || !s.level_ptr || lm->level_guid != s.level_guid || !inst->hx_ok)
+    if ((!remove_only && !inst->pin_mode) || !inst->tap_view_ok || inst->tap_biome < 0 || !lm || !s.markers_ok ||
+        !s.markers_comp || !s.level_ptr || lm->level_guid != s.level_guid || !inst->hx_ok)
         return false;
     const bc_live::MarkerType* type = nullptr;
     for (const auto& t : s.marker_types)
         if (t.guid == guid)
             type = &t;
-    if (!type && !eraser)
-        return false;
     const auto& v = inst->tap_view;
     const double wx = v.x0 + cx / v.scale, wy = v.y1 - cy / v.scale;
     const bc_live::MapMarker* best = nullptr;
-    double best_d = eraser ? kPinEraserPx : kPinTouchPx;
+    double best_d = kPinTouchPx;
     for (const auto& m : s.markers) {
         if (m.level_guid != s.level_guid)
             continue;
@@ -2082,20 +2095,16 @@ bool PinTap(Instance* inst, int64_t packed) {
         if (d < best_d)
             best_d = d, best = &m;
     }
-    if (eraser && !best)
-        return false; // no marker there: the refused haptic says so
+    // A tap on a marker takes it away (with or without the Pin button on); elsewhere, with the
+    // Pin button on, a new marker of the picked symbol goes there.
+    if (!best && (remove_only || !type))
+        return false;
     HelperRequest r;
     r.target = s.markers_comp;
     r.o1 = best && best->level_ptr ? best->level_ptr : s.level_ptr;
     if (best) {
-        if (eraser || best->type_guid == guid) {
-            r.cmd = kCmdRemoveMarker;
-            r.i = best->id;
-        } else {
-            r.cmd = kCmdChangeMarker;
-            r.o2 = best->ptr;
-            r.o3 = type->type_obj;
-        }
+        r.cmd = kCmdRemoveMarker;
+        r.i = best->id;
     } else {
         // The game's own limit (MapMarkersComponent.markersCountLimit, counted its way).
         if (s.markers_limit > 0) {
@@ -2169,7 +2178,9 @@ EdenDsmodBool OnAction(void* p, const char* action, int64_t argument) {
         } else if (a == "map_home") {
             inst->pan_wx = inst->pan_wy = 0;
         } else if (a == "pin_tap") {
-            return PinTap(inst, argument) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+            return PinTap(inst, argument, false) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        } else if (a == "map_tap") {
+            return PinTap(inst, argument, true) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         } else if (a == "menu_tap") {
             return MenuTap(inst, argument) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
         } else if (a == "menu_back") {
@@ -2240,6 +2251,9 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
     } else if (int tab_on = 0; std::sscanf(what.c_str(), "tab:eq:%d", &tab_on) == 1) {
         w = kTabW, h = kTabH;
         px = bc_ui::Button(*common, "Equipment", w, h, tab_on != 0);
+    } else if (int map_on = 0; std::sscanf(what.c_str(), "tab:map:%d", &map_on) == 1) {
+        w = kTabW, h = kTabH;
+        px = bc_ui::Button(*common, "Map", w, h, map_on != 0);
     } else if (what == "menunone" || what == "menuwait" || what == "menufail") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common,
@@ -2254,8 +2268,7 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
         if (t < 0 || t >= kPinTools)
             return false;
         w = h = kPinCell;
-        // The eraser: a cross drawn in the cell (no sprite).
-        px = bc_ui::IconCell(*common, t == kPinEraser ? "" : kPinSprites[t], pin_on != 0, w, h);
+        px = bc_ui::IconCell(*common, kPinSprites[t], pin_on != 0, w, h);
     } else if (what == "home") {
         // Back to the player (shown while the map is dragged off).
         w = h = kPinCell;
@@ -2314,8 +2327,7 @@ bool LoadUi(Instance* inst, const std::string& what, void* receiver, EdenDsmodIm
         px = bc_ui::Label(*common, std::string("Dual Screen Mod ") + kVersion, 26, w, h, 1, {0.62f, 0.58f, 0.52f, 1});
     } else if (what == "pinhint" || what == "pinhint:0" || what == "pinhint:1") {
         w = kLabelW, h = kLabelH;
-        px = bc_ui::Label(*common, what == "pinhint:1" ? "Tap a pin to remove it" : "Tap the map to place a pin", 34,
-                          w, h);
+        px = bc_ui::Label(*common, "Tap to place a pin, tap a pin to remove it", 32, w, h);
     } else if (what == "debug") {
         w = kLabelW, h = kLabelH;
         px = bc_ui::Label(*common, "Debug", 48, w, h);
